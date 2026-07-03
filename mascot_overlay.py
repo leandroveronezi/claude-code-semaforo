@@ -21,7 +21,7 @@ from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import QWidget
 
 from config import Config
-from mascot import MascotWidget
+from mascot import MASCOT_HEIGHT, MASCOT_WIDTH, MascotWidget
 from speech_bubble import TAIL_HEIGHT as BUBBLE_TAIL_LENGTH
 from speech_bubble import SpeechBubble
 
@@ -30,7 +30,7 @@ MARGIN = 12  # respiro entre o conteúdo (mascote+balão) e a borda da janela
 GAP = 2  # distância entre o corpo do mascote e o corpo do balão (o rabinho preenche visualmente)
 DEFAULT_POS = QPoint(160, 160)
 RAISE_INTERVAL_MS = 700  # ver comentário em _AlwaysOnTopTooltip (semaphore_panel.py)
-MASCOT_SIZE = (144, 108)
+MASCOT_SIZE = (MASCOT_WIDTH, MASCOT_HEIGHT)
 
 TICK_MS = 250  # granularidade do relógio de rotação (permite pausar no hover sem perder precisão)
 
@@ -84,6 +84,7 @@ class MascotOverlay(QWidget):
         # _relayout(), porque a posição relativa entre os dois muda conforme
         # a borda da tela mais próxima do mascote.
         self.bubble = SpeechBubble(self)
+        self.bubble.set_char_limit(config.mascot_message_limit)
         self.mascot = MascotWidget(config.mascot, config.mascot_sounds_enabled, self, size=MASCOT_SIZE)
 
         self._relayout()
@@ -250,6 +251,7 @@ class MascotOverlay(QWidget):
         self.mascot.set_sound_enabled(config.mascot_sounds_enabled)
         self._rotation_ms = int(config.mascot_rotation_seconds * 1000)
         self._idle_last_ms = int(config.mascot_idle_last_seconds * 1000)
+        self.bubble.set_char_limit(config.mascot_message_limit)
 
     # -- hover (pausa a rotação) -----------------------------------------------------------
     def enterEvent(self, event) -> None:

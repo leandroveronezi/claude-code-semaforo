@@ -6,21 +6,21 @@ from PyQt6.QtCore import QRectF, QSize, Qt
 from PyQt6.QtGui import QColor, QFontMetrics, QPainter, QPainterPath
 from PyQt6.QtWidgets import QWidget
 
-BUBBLE_WIDTH = 220  # o balão só existe no mascote único agora (mascot_overlay.py), sem a largura de coluna como limite
-PADDING = 10
-TAIL_HEIGHT = 8  # o quanto o rabinho protrai pra fora do corpo, em qualquer lado
-TAIL_WIDTH = 14  # largura da base do rabinho, na aresta em que ele nasce
-CORNER_RADIUS = 12
-PREVIEW_LIMIT = 220
-FONT_POINT_SIZE = 9.5
-LINE_SPACING = 4
+BUBBLE_WIDTH = 150
+PADDING = 8
+TAIL_HEIGHT = 7  # o quanto o rabinho protrai pra fora do corpo, em qualquer lado
+TAIL_WIDTH = 12  # largura da base do rabinho, na aresta em que ele nasce
+CORNER_RADIUS = 10
+DEFAULT_PREVIEW_LIMIT = 150  # valor de fábrica; configurável via Config.mascot_message_limit
+FONT_POINT_SIZE = 7.5
+LINE_SPACING = 3
 
 BACKGROUND_COLOR = QColor(242, 242, 238, 245)
 BORDER_COLOR = QColor(0, 0, 0, 40)
 TEXT_COLOR = QColor(30, 30, 32)
 
 
-def _truncate(text: str, limit: int = PREVIEW_LIMIT) -> str:
+def _truncate(text: str, limit: int) -> str:
     collapsed = " ".join(text.split())
     if len(collapsed) <= limit:
         return collapsed
@@ -42,7 +42,11 @@ class SpeechBubble(QWidget):
         self._preview = ""
         self._lines: list[str] = []
         self._tail_side = "bottom"  # "bottom" | "left" | "right"
+        self._char_limit = DEFAULT_PREVIEW_LIMIT
         self.setFixedSize(0, 0)
+
+    def set_char_limit(self, limit: int) -> None:
+        self._char_limit = limit
 
     @property
     def has_content(self) -> bool:
@@ -66,7 +70,7 @@ class SpeechBubble(QWidget):
                 self._apply_size()
             return
 
-        preview = _truncate(text)
+        preview = _truncate(text, self._char_limit)
         if preview == self._preview:
             return
 

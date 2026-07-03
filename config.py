@@ -17,6 +17,7 @@ class Config:
     alert_beep_enabled: bool = True
     mascot_rotation_seconds: float = 4.5  # tempo de cada sessão em erro/working, e de cada item (não-último) na fila ociosa
     mascot_idle_last_seconds: float = 9.0  # tempo do último item da fila ociosa antes de tudo sumir
+    mascot_message_limit: int = 150  # nº de caracteres exibidos no balão antes de truncar com "…"
 
     @classmethod
     def load(cls) -> "Config":

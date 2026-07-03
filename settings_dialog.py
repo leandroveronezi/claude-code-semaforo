@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -115,6 +116,9 @@ class SettingsDialog(QDialog):
         layout.addLayout(self._build_timing_row(
             "Última mensagem ociosa (s)", config.mascot_idle_last_seconds, self._on_idle_last_changed
         ))
+        layout.addLayout(self._build_char_limit_row(
+            "Caracteres no balão antes de truncar", config.mascot_message_limit, self._on_message_limit_changed
+        ))
 
         hint = QLabel("As mudanças aplicam na hora, sem precisar reiniciar.", self)
         hint.setObjectName("hint")
@@ -171,6 +175,18 @@ class SettingsDialog(QDialog):
         row.addWidget(spin)
         return row
 
+    def _build_char_limit_row(self, label_text: str, value: int, on_change: Callable[[int], None]) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addWidget(QLabel(label_text, self))
+        row.addStretch(1)
+        spin = QSpinBox(self)
+        spin.setRange(30, 1000)
+        spin.setSingleStep(10)
+        spin.setValue(value)
+        spin.valueChanged.connect(on_change)
+        row.addWidget(spin)
+        return row
+
     def _step_agent(self, direction: int) -> None:
         self._agent_index = (self._agent_index + direction) % len(self._agents)
         name = self._agents[self._agent_index]
@@ -201,4 +217,8 @@ class SettingsDialog(QDialog):
 
     def _on_idle_last_changed(self, value: float) -> None:
         self._config.mascot_idle_last_seconds = value
+        self._emit_change()
+
+    def _on_message_limit_changed(self, value: int) -> None:
+        self._config.mascot_message_limit = value
         self._emit_change()
