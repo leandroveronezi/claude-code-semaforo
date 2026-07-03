@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -108,6 +109,13 @@ class SettingsDialog(QDialog):
         self._alert_beep_check.toggled.connect(self._on_alert_beep_toggled)
         layout.addWidget(self._alert_beep_check)
 
+        layout.addLayout(self._build_timing_row(
+            "Revezamento entre sessões (s)", config.mascot_rotation_seconds, self._on_rotation_changed
+        ))
+        layout.addLayout(self._build_timing_row(
+            "Última mensagem ociosa (s)", config.mascot_idle_last_seconds, self._on_idle_last_changed
+        ))
+
         hint = QLabel("As mudanças aplicam na hora, sem precisar reiniciar.", self)
         hint.setObjectName("hint")
         layout.addWidget(hint)
@@ -150,6 +158,19 @@ class SettingsDialog(QDialog):
 
         return row
 
+    def _build_timing_row(self, label_text: str, value: float, on_change: Callable[[float], None]) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addWidget(QLabel(label_text, self))
+        row.addStretch(1)
+        spin = QDoubleSpinBox(self)
+        spin.setRange(1.0, 60.0)
+        spin.setSingleStep(0.5)
+        spin.setDecimals(1)
+        spin.setValue(value)
+        spin.valueChanged.connect(on_change)
+        row.addWidget(spin)
+        return row
+
     def _step_agent(self, direction: int) -> None:
         self._agent_index = (self._agent_index + direction) % len(self._agents)
         name = self._agents[self._agent_index]
@@ -172,4 +193,12 @@ class SettingsDialog(QDialog):
 
     def _on_alert_beep_toggled(self, checked: bool) -> None:
         self._config.alert_beep_enabled = checked
+        self._emit_change()
+
+    def _on_rotation_changed(self, value: float) -> None:
+        self._config.mascot_rotation_seconds = value
+        self._emit_change()
+
+    def _on_idle_last_changed(self, value: float) -> None:
+        self._config.mascot_idle_last_seconds = value
         self._emit_change()

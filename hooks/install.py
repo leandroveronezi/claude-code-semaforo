@@ -28,9 +28,10 @@ MANAGED_HOOKS = {
     "UserPromptSubmit": (None, "working"),
     "PreToolUse": ("", "working"),
     "Notification": ("permission_prompt", "error"),
-    "PermissionRequest": ("AskUserQuestion|Bash|ExitPlanMode", "error"),
+    "PermissionRequest": (None, "error"),  # qualquer ferramenta pedindo permissão pausa a sessão -> vermelho
     "PostToolUse": ("", "working"),
     "PostToolUseFailure": (None, "error"),
+    "StopFailure": (None, "error"),  # turno terminou por erro de API (rate limit, sobrecarga, etc.)
     "Stop": (None, "idle"),
     "SessionEnd": (None, "remove"),
 }

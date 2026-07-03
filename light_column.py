@@ -1,15 +1,15 @@
-"""Uma coluna compacta (rótulo + 3 luzes) para uma sessão, embutida no painel único."""
+"""Uma coluna compacta (3 luzes) para uma sessão, embutida no painel único."""
 import math
 import time
 
-from PyQt6.QtCore import QPoint, QRectF, Qt, QTimer
-from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QRadialGradient
+from PyQt6.QtCore import QPoint, Qt, QTimer
+from PyQt6.QtGui import QColor, QPainter, QRadialGradient
 from PyQt6.QtWidgets import QWidget
 
 COLUMN_WIDTH = 72  # alinhado com MASCOT_WIDTH em mascot.py
 LIGHT_DIAMETER = 16
 LIGHT_GAP = 6
-LABEL_HEIGHT = 15
+TOP_PADDING = 4
 
 LIGHT_COLORS = {
     "error": QColor("#ff453a"),
@@ -24,14 +24,13 @@ DIM_COLORS = {
 BEZEL_COLOR = QColor(0, 0, 0, 90)
 ORDER = ("error", "working", "idle")  # topo -> base, como um semáforo real
 
-CONTENT_HEIGHT = LABEL_HEIGHT + 3 * LIGHT_DIAMETER + 2 * LIGHT_GAP + 6
+CONTENT_HEIGHT = TOP_PADDING + 3 * LIGHT_DIAMETER + 2 * LIGHT_GAP + 4
 
 
 class LightColumn(QWidget):
-    def __init__(self, session_id: str, label: str, status: str = "idle", parent=None):
+    def __init__(self, session_id: str, status: str = "idle", parent=None):
         super().__init__(parent)
         self.session_id = session_id
-        self.label = label
         self.status = status if status in LIGHT_COLORS else "idle"
 
         # deixa os cliques passarem direto para o painel (arrastar funciona em qualquer ponto)
@@ -42,12 +41,6 @@ class LightColumn(QWidget):
         self._pulse_timer.setInterval(40)
         self._pulse_timer.timeout.connect(self.update)
         self._sync_pulse_timer()
-
-    def set_label(self, label: str) -> None:
-        if label != self.label:
-            self.label = label
-            self.setToolTip(label)
-            self.update()
 
     def set_status(self, status: str) -> None:
         if status not in LIGHT_COLORS or status == self.status:
@@ -70,23 +63,8 @@ class LightColumn(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        active_color = LIGHT_COLORS[self.status]
-        painter.setPen(QColor(active_color.red(), active_color.green(), active_color.blue(), 235))
-        font = painter.font()
-        font.setPointSize(6)
-        font.setWeight(QFont.Weight.DemiBold)
-        font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 102)
-        painter.setFont(font)
-        metrics = QFontMetrics(font)
-        elided = metrics.elidedText(self.label, Qt.TextElideMode.ElideRight, COLUMN_WIDTH)
-        painter.drawText(
-            QRectF(0, 0, COLUMN_WIDTH, LABEL_HEIGHT),
-            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
-            elided,
-        )
-
         center_x = COLUMN_WIDTH / 2
-        top = LABEL_HEIGHT + 5
+        top = TOP_PADDING
         for i, name in enumerate(ORDER):
             cy = top + LIGHT_DIAMETER / 2 + i * (LIGHT_DIAMETER + LIGHT_GAP)
             self._draw_light(painter, center_x, cy, name, self.status == name)

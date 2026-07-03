@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from audio import play_sound
 from config import Config
 from light_column import LIGHT_COLORS
+from mascot_overlay import MascotOverlay
 from semaphore_panel import SemaphorePanel
 from settings_dialog import SettingsDialog
 from status_store import read_status, remove_status, sessions_dir, write_status
@@ -37,9 +38,11 @@ class SessionManager:
         self._statuses: dict[str, str] = {}
         self._labels: dict[str, str] = {}
         self._messages: dict[str, str | None] = {}
+        self._activities: dict[str, str | None] = {}
+        self._status_since: dict[str, float] = {}  # quando o status atual começou (ordem de chegada p/ mascote)
         self._manually_hidden = False  # usuário escondeu o painel enquanto havia sessões
         self.config = Config.load()
-        self.panel.apply_config(self.config)
+        self.mascot_overlay = MascotOverlay(self.config)
         self._settings_dialog: SettingsDialog | None = None
         self.settings = QSettings("SemaforoStatus", "Posicoes")
 
@@ -106,7 +109,15 @@ class SessionManager:
             self._labels[session_id] = label
             self._statuses[session_id] = status
             self._messages[session_id] = message
-            self.panel.upsert_session(session_id, label, status, message, activity)
+            self._activities[session_id] = activity
+            if status != previous_status:
+                self._status_since[session_id] = time.time()
+                # "chegou" numa sessão ociosa vindo de outro estado -> notificação
+                # passageira na fila do mascote; sessão nova descoberta já ociosa
+                # (previous_status is None) não conta como chegada.
+                if status == "idle" and previous_status is not None:
+                    self.mascot_overlay.enqueue_idle(label, message)
+            self.panel.upsert_session(session_id, label, status, message)
             if status == "error" and previous_status != "error":
                 self._play_alert_sound()
                 self._notify_desktop(label)
@@ -117,9 +128,12 @@ class SessionManager:
                 self._statuses.pop(session_id, None)
                 self._labels.pop(session_id, None)
                 self._messages.pop(session_id, None)
+                self._activities.pop(session_id, None)
+                self._status_since.pop(session_id, None)
                 self.panel.remove_session(session_id)
 
         self._update_tray_icon(self._aggregate_status())
+        self._update_mascot()
         self._sync_panel_visibility()
         self._resync_watched_files(paths)
 
@@ -170,6 +184,17 @@ class SessionManager:
                 return status
         return "idle"
 
+    # -- mascote único -----------------------------------------------------------
+    def _entries_for(self, status: str) -> list[tuple[str, str | None, str | None]]:
+        """Sessões no status dado, em ordem de chegada (a que está nesse
+        status há mais tempo primeiro) — para o mascote revezar entre elas."""
+        sids = [sid for sid, s in self._statuses.items() if s == status]
+        sids.sort(key=lambda sid: self._status_since.get(sid, 0.0))
+        return [(self._labels.get(sid, sid), self._messages.get(sid), self._activities.get(sid)) for sid in sids]
+
+    def _update_mascot(self) -> None:
+        self.mascot_overlay.sync(self._entries_for("error"), self._entries_for("working"))
+
     def _update_tray_icon(self, status: str) -> None:
         pixmap = QPixmap(64, 64)
         pixmap.fill(QColor(0, 0, 0, 0))
@@ -206,7 +231,8 @@ class SessionManager:
 
     def _on_config_changed(self, config: Config) -> None:
         config.save()
-        self.panel.apply_config(config)
+        self.mascot_overlay.update_config(config)
+        self._sync_mascot_visibility()
 
     def _toggle_panel(self) -> None:
         showing = not self.panel.isVisible()
@@ -215,6 +241,7 @@ class SessionManager:
         # contrário isso conflitaria com o auto-hide de "sem sessões".
         self._manually_hidden = (not showing) and bool(self._statuses)
         self._update_tray_icon(self._aggregate_status())
+        self._sync_mascot_visibility()
 
     def _sync_panel_visibility(self) -> None:
         if self._statuses:
@@ -223,6 +250,11 @@ class SessionManager:
         else:
             self.panel.hide()
             self._manually_hidden = False
+        self._sync_mascot_visibility()
+
+    def _sync_mascot_visibility(self) -> None:
+        want_visible = bool(self._statuses) and self.config.mascot_enabled and not self._manually_hidden
+        self.mascot_overlay.set_visible_animated(want_visible)
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:

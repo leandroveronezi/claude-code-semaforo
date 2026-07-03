@@ -41,6 +41,7 @@ ACTIVITY_ANIMATION = {
     "processing": "Processing",
 }
 SOUND_COOLDOWN_SECONDS = 4.0
+MIN_TRANSITION_FRAME_MS = 60  # piso pra Show/Hide não virarem um "flash" imperceptível
 
 _agent_data_cache: dict[str, dict] = {}
 _pixmap_cache: dict[str, QPixmap] = {}
@@ -235,7 +236,13 @@ class MascotWidget(QWidget):
         if not self._frames:
             return
         frame = self._frames[self._frame_index]
-        self._timer.start(frame["duration"])
+        duration = frame["duration"]
+        if self._transitional:
+            # alguns personagens (ex.: F1, Rocky) trazem Show/Hide com frames
+            # de 10ms no asset original — imperceptível como transição de
+            # entrada/saída, então garantimos um mínimo visível só aqui.
+            duration = max(duration, MIN_TRANSITION_FRAME_MS)
+        self._timer.start(duration)
         sound_id = frame.get("sound")
         # isVisible() já considera a janela do painel estar oculta (não só
         # este widget) — sem plateia, sem som. O cooldown evita o mesmo som
