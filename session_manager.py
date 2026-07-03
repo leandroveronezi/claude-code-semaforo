@@ -33,6 +33,7 @@ class SessionManager:
         self._updated_at: dict[str, float] = {}
         self._statuses: dict[str, str] = {}
         self._labels: dict[str, str] = {}
+        self._manually_hidden = False  # usuário escondeu o painel enquanto havia sessões
         self.settings = QSettings("SemaforoStatus", "Posicoes")
 
         saved_pos = self.settings.value(SETTINGS_KEY)
@@ -66,7 +67,6 @@ class SessionManager:
         self.tray.show()
 
     def start(self) -> None:
-        self.panel.show()
         self.directory.mkdir(parents=True, exist_ok=True)
         self.watcher.addPath(str(self.directory))
         self._scan()
@@ -109,6 +109,7 @@ class SessionManager:
                 self.panel.remove_session(session_id)
 
         self._update_tray_icon(self._aggregate_status())
+        self._sync_panel_visibility()
         self._resync_watched_files(paths)
 
     def _play_alert_sound(self) -> None:
@@ -195,8 +196,20 @@ class SessionManager:
         self.menu.addAction(quit_action)
 
     def _toggle_panel(self) -> None:
-        self.panel.setVisible(not self.panel.isVisible())
+        showing = not self.panel.isVisible()
+        self.panel.setVisible(showing)
+        # só conta como "escondido manualmente" se ainda há sessões — do
+        # contrário isso conflitaria com o auto-hide de "sem sessões".
+        self._manually_hidden = (not showing) and bool(self._statuses)
         self._update_tray_icon(self._aggregate_status())
+
+    def _sync_panel_visibility(self) -> None:
+        if self._statuses:
+            if not self._manually_hidden:
+                self.panel.show()
+        else:
+            self.panel.hide()
+            self._manually_hidden = False
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:

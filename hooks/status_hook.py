@@ -35,7 +35,7 @@ def main() -> None:
     if target == "remove":
         remove_status(session_id)
     else:
-        write_status(session_id, target, label=f"Claude — {label}")
+        write_status(session_id, target, label=label)
 
 
 if __name__ == "__main__":

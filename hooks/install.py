@@ -47,7 +47,7 @@ def _is_ours(group: dict) -> bool:
     return any(MARKER in h.get("command", "") for h in group.get("hooks", []))
 
 
-def main() -> None:
+def install(quiet: bool = False) -> None:
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     if SETTINGS_PATH.exists():
         settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
@@ -63,9 +63,32 @@ def main() -> None:
         hooks[event] = kept
 
     SETTINGS_PATH.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    print(f"Hooks instalados em {SETTINGS_PATH}")
-    for event in MANAGED_HOOKS:
-        print(f"  - {event}")
+    if not quiet:
+        print(f"Hooks instalados em {SETTINGS_PATH}")
+        for event in MANAGED_HOOKS:
+            print(f"  - {event}")
+
+
+def is_up_to_date() -> bool:
+    """Confere se todos os hooks gerenciados em settings.json já apontam
+    para o HOOK_SCRIPT atual (ex.: detecta o projeto ter sido movido/renomeado
+    desde a última instalação)."""
+    if not SETTINGS_PATH.exists():
+        return False
+    try:
+        settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+
+    hooks = settings.get("hooks", {})
+    return all(
+        _group(matcher, status) in hooks.get(event, [])
+        for event, (matcher, status) in MANAGED_HOOKS.items()
+    )
+
+
+def main() -> None:
+    install()
 
 
 if __name__ == "__main__":
