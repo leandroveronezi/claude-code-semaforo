@@ -15,6 +15,28 @@ SESSIONS = [
 # idle é o mais comum, error é raro
 WEIGHTED_STATUSES = ["idle"] * 5 + ["working"] * 4 + ["error"] * 1
 
+# mensagens fictícias para exercitar o balão de fala do mascote sem precisar
+# de uma sessão de verdade do Claude Code
+IDLE_MESSAGES = [
+    "Pronto! Rodei os testes e ficou tudo verde, pode conferir.",
+    "Terminei de refatorar o módulo, ficou bem mais enxuto agora.",
+    "Corrigi o bug do parser — era um caso de borda com strings vazias.",
+    "Fiz o commit com as mudanças que você pediu, revisão pronta.",
+]
+ERROR_MESSAGES = [
+    "Preciso da sua permissão pra rodar esse comando.",
+    "Encontrei um conflito de merge que precisa de uma decisão sua.",
+    "Essa ferramenta falhou — dá uma olhada no log de erro?",
+]
+
+
+def _message_for(status: str) -> str | None:
+    if status == "idle":
+        return random.choice(IDLE_MESSAGES)
+    if status == "error":
+        return random.choice(ERROR_MESSAGES)
+    return None
+
 
 def main() -> None:
     for session_id, label in SESSIONS:
@@ -25,7 +47,7 @@ def main() -> None:
         while True:
             session_id, label = random.choice(SESSIONS)
             status = random.choice(WEIGHTED_STATUSES)
-            write_status(session_id, status, label)
+            write_status(session_id, status, label, message=_message_for(status))
             print(f"{label} -> {status}")
             time.sleep(random.uniform(1.5, 4.0))
     except KeyboardInterrupt:

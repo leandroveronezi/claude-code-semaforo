@@ -28,7 +28,7 @@ MANAGED_HOOKS = {
     "UserPromptSubmit": (None, "working"),
     "PreToolUse": ("", "working"),
     "Notification": ("permission_prompt", "error"),
-    "PermissionRequest": ("AskUserQuestion|Bash", "error"),
+    "PermissionRequest": ("AskUserQuestion|Bash|ExitPlanMode", "error"),
     "PostToolUse": ("", "working"),
     "PostToolUseFailure": (None, "error"),
     "Stop": (None, "idle"),

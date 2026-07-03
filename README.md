@@ -1,14 +1,32 @@
 # Semáforo de Status
 
 Painel flutuante que mostra, para cada editor/agente monitorado, um mini
-semáforo (🔴🟡🟢). Todas as sessões ativas aparecem lado a lado em um único
-painel — não é uma janela por sessão.
+semáforo (🔴🟡🟢) com um mascote animado por cima. Todas as sessões ativas
+aparecem lado a lado em um único painel — não é uma janela por sessão.
 
 - 🟢 Verde = ocioso / aguardando comando
 - 🟡 Amarelo (pulsando) = processando / escrevendo código
 - 🔴 Vermelho = erro / intervenção humana necessária (toca `assets/alert.wav`
   via `paplay`/`pw-play` e dispara uma notificação de desktop ao entrar
   nesse estado — só na transição, não fica repetindo)
+
+Cada sessão tem seu próprio mascote animado (estilo MS Agent — Clippy,
+Merlin, Rocky, Rover, Links, F1, Genius, Bonzi, Genie ou Peedy) que reflete
+o status atual (parado no idle, "processando" no working, "alerta" no
+error), com som por quadro de animação quando o personagem tem. Quando a
+sessão volta a ficar verde (ou entra em erro), o mascote mostra um balão de
+fala com um preview (~150 caracteres) da última resposta em texto do Claude
+— some quando o status muda de novo. Os assets do mascote
+(`assets/mascot/<Personagem>/`) vêm do projeto
+[clippyjs/clippy.js](https://github.com/clippyjs/clippy.js); o repositório
+não declara uma licença clara (os sprites são propriedade original da
+Microsoft, redistribuídos pela comunidade por nostalgia) — uso pensado
+para local/pessoal, sem redistribuição.
+
+Dá pra escolher o personagem, desligar o som do mascote, desligar o
+mascote (voltando só às luzes) ou desligar o beep de alerta pelo menu da
+bandeja → **Configurações...**. As preferências ficam salvas em
+`~/.config/semaforo-status/config.yaml`.
 
 > Usamos `paplay`/`pw-play` (tocam pelo servidor de áudio de verdade) em vez
 > do beep nativo do Qt (`QApplication.beep()`), porque esse último usa o
@@ -49,9 +67,10 @@ pip install --user "PyQt6==6.6.1" "PyQt6-Qt6==6.6.3"
 python3 main.py
 ```
 
-O painel aparece no canto da tela (ou na última posição em que você o
-arrastou) e um ícone surge na bandeja do sistema. Enquanto não houver nenhuma
-sessão reportando status, ele mostra "Sem sessões monitoradas".
+Um ícone surge na bandeja do sistema assim que o programa abre. O painel só
+aparece sozinho quando existe pelo menos uma sessão reportando status; sem
+nenhuma sessão ativa ele fica escondido (dá pra abrir manualmente pelo ícone
+da bandeja). Ele lembra a última posição em que você o arrastou.
 
 - **Arrastar**: clique e segure em qualquer ponto do painel (fora dos
   círculos não é necessário, os cliques atravessam para o fundo).
@@ -86,11 +105,18 @@ qualquer projeto) e chamam `hooks/status_hook.py`:
 | `UserPromptSubmit` | — | 🟡 working |
 | `PreToolUse` | qualquer ferramenta | 🟡 working |
 | `Notification` | `permission_prompt` | 🔴 error |
-| `PermissionRequest` | `AskUserQuestion\|Bash` | 🔴 error |
+| `PermissionRequest` | `AskUserQuestion\|Bash\|ExitPlanMode` | 🔴 error |
 | `PostToolUse` (a ferramenta terminou) | qualquer ferramenta | 🟡 working |
 | `PostToolUseFailure` (a ferramenta falhou de verdade) | — | 🔴 error |
 | `Stop` (terminou a resposta, esperando você) | — | 🟢 idle |
 | `SessionEnd` | — | remove a coluna |
+
+Nos eventos `Stop`, `Notification` e `PermissionRequest`, o hook também tenta
+ler a última resposta em texto do Claude (via `transcript_path`, que o
+próprio Claude Code manda no payload) e mandar pro balão de fala do mascote.
+Isso é melhor esforço: o formato do transcript é interno/não documentado, e
+se mudar em uma versão futura do Claude Code o hook simplesmente não acha
+nada e o balão não aparece — nunca trava o hook.
 
 ### Instalando/reinstalando os hooks
 
@@ -109,6 +135,12 @@ configurações/hooks que já estejam lá. Se preferir editar manualmente, use
 `/hooks` no Claude Code (ou reinicie a sessão) para recarregar a
 configuração depois.
 
+O `main.py` já confere isso sozinho a cada início (se os hooks estiverem
+desatualizados — por exemplo, depois de mover/renomear a pasta do projeto —
+ele reinstala automaticamente e avisa por notificação do desktop). Rodar
+`hooks/install.py` manualmente só é necessário na primeira vez em uma
+máquina nova, ou se quiser forçar a atualização sem esperar o app abrir.
+
 > **Por que `PermissionRequest` inclui `Bash` apesar do custo.**
 > Neste ambiente, `PermissionRequest` dispara em praticamente todo comando
 > Bash — mesmo os "aprovados automaticamente", sem ninguém realmente
@@ -126,6 +158,11 @@ configuração depois.
 > outras ferramentas). `Elicitation`/`ElicitationResult` não se aplicam
 > aqui — são específicos de servidores MCP pedindo input, não do
 > `AskUserQuestion` nativo do Claude Code.
+>
+> `ExitPlanMode` (o pedido de aprovação do plano, no modo de planejamento)
+> também entra no matcher — sem isso, o painel não acusava vermelho enquanto
+> esperava você aprovar um plano, já que o nome dessa ferramenta não batia
+> com `AskUserQuestion|Bash`.
 
 Isso cobre apenas sessões do **Claude Code**. Outros agentes/IDEs (Antigravity
 IDE, etc.) não têm essa integração — eles precisariam do próprio mecanismo de
@@ -171,7 +208,7 @@ Use o helper de linha de comando para escrever esse arquivo (ele grava de
 forma atômica, então é seguro chamar de hooks/scripts concorrentes):
 
 ```bash
-python3 status_writer.py <session_id> <idle|working|error> --label "Nome do editor"
+python3 status_writer.py <session_id> <idle|working|error> --label "Nome do editor" --message "Texto opcional do balão"
 ```
 
 Exemplos:
@@ -180,8 +217,8 @@ Exemplos:
 # quando o agente começa a processar
 python3 status_writer.py vscode-1 working --label "VSCode — projeto A"
 
-# quando termina e volta a aguardar
-python3 status_writer.py vscode-1 idle --label "VSCode — projeto A"
+# quando termina e volta a aguardar, com um preview no balão do mascote
+python3 status_writer.py vscode-1 idle --label "VSCode — projeto A" --message "Terminei, pode conferir"
 
 # quando algo dá errado e precisa de intervenção humana
 python3 status_writer.py vscode-1 error --label "VSCode — projeto A"
@@ -200,14 +237,20 @@ ambiente `SEMAFORO_STATUS_DIR` antes de rodar tanto `main.py` quanto
 
 | Arquivo | Função |
 |---|---|
-| `main.py` | ponto de entrada |
-| `semaphore_panel.py` | janela única, arrastável, sem bordas, que organiza as colunas lado a lado |
+| `main.py` | ponto de entrada; também confere/corrige os hooks a cada início (veja abaixo) |
+| `semaphore_panel.py` | janela única, arrastável, sem bordas, que organiza as colunas (balão + mascote + luzes) lado a lado |
+| `mascot.py` | widget do personagem animado (sprites do clippy.js), agnóstico de qual personagem, sincronizado com o status |
+| `speech_bubble.py` | balão de fala com preview da última resposta |
 | `light_column.py` | desenha o mini semáforo (rótulo + 3 luzes) de uma sessão |
+| `audio.py` | reprodução de som compartilhada (beep de alerta + sons do mascote) |
+| `config.py` | preferências do usuário (personagem, toggles), lidas/salvas em YAML |
+| `settings_dialog.py` | janela de configurações, aberta pelo menu da bandeja |
 | `session_manager.py` | faz polling da pasta `sessions/`, sincroniza o painel e o ícone da bandeja |
 | `status_store.py` | leitura/escrita atômica dos arquivos de status |
 | `status_writer.py` | CLI para reportar status (usado por hooks/scripts externos) |
 | `hooks/status_hook.py` | hook do Claude Code (chamado automaticamente via `~/.claude/settings.json`) |
-| `hooks/install.py` | instala/atualiza os hooks em `~/.claude/settings.json` (rode em cada máquina nova) |
+| `hooks/install.py` | instala/atualiza os hooks em `~/.claude/settings.json` (chamado automaticamente pelo `main.py`, ou manualmente) |
 | `autostart.py` | liga/desliga o painel abrindo sozinho no login |
-| `simulate.py` | gera 3 sessões fictícias para demonstração |
+| `simulate.py` | gera 3 sessões fictícias (com mensagens de exemplo) para demonstração |
 | `generate_alert_sound.py` | gera `assets/alert.wav` (som do alerta vermelho) |
+| `assets/mascot/<Personagem>/` | sprites + dados de animação + sons de cada personagem (origem: clippy.js) |

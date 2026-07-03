@@ -16,7 +16,14 @@ def sessions_dir() -> Path:
     return path
 
 
-def write_status(session_id: str, status: str, label: str | None = None, directory: Path | None = None) -> Path:
+def write_status(
+    session_id: str,
+    status: str,
+    label: str | None = None,
+    directory: Path | None = None,
+    message: str | None = None,
+    activity: str | None = None,
+) -> Path:
     if status not in STATUSES:
         raise ValueError(f"status inválido: {status!r} (use um de {STATUSES})")
 
@@ -26,6 +33,8 @@ def write_status(session_id: str, status: str, label: str | None = None, directo
         "session_id": session_id,
         "status": status,
         "label": label or session_id,
+        "message": message,
+        "activity": activity,
         "updated_at": time.time(),
     }
 

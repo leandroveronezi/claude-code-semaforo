@@ -6,7 +6,7 @@ from PyQt6.QtCore import QPoint, QRectF, Qt, QTimer
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QRadialGradient
 from PyQt6.QtWidgets import QWidget
 
-COLUMN_WIDTH = 46
+COLUMN_WIDTH = 72  # alinhado com MASCOT_WIDTH em mascot.py
 LIGHT_DIAMETER = 16
 LIGHT_GAP = 6
 LABEL_HEIGHT = 15

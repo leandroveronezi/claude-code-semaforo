@@ -9,8 +9,11 @@ from PyQt6.QtCore import QFileSystemWatcher, QPoint, QSettings, Qt, QTimer
 from PyQt6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
+from audio import play_sound
+from config import Config
 from light_column import LIGHT_COLORS
 from semaphore_panel import SemaphorePanel
+from settings_dialog import SettingsDialog
 from status_store import read_status, remove_status, sessions_dir, write_status
 
 ALERT_SOUND = Path(__file__).resolve().parent / "assets" / "alert.wav"
@@ -33,7 +36,11 @@ class SessionManager:
         self._updated_at: dict[str, float] = {}
         self._statuses: dict[str, str] = {}
         self._labels: dict[str, str] = {}
+        self._messages: dict[str, str | None] = {}
         self._manually_hidden = False  # usuário escondeu o painel enquanto havia sessões
+        self.config = Config.load()
+        self.panel.apply_config(self.config)
+        self._settings_dialog: SettingsDialog | None = None
         self.settings = QSettings("SemaforoStatus", "Posicoes")
 
         saved_pos = self.settings.value(SETTINGS_KEY)
@@ -93,10 +100,13 @@ class SessionManager:
             self._updated_at[session_id] = updated_at
             label = data.get("label", session_id)
             status = data.get("status", "idle")
+            message = data.get("message")
+            activity = data.get("activity")
             previous_status = self._statuses.get(session_id)
             self._labels[session_id] = label
             self._statuses[session_id] = status
-            self.panel.upsert_session(session_id, label, status)
+            self._messages[session_id] = message
+            self.panel.upsert_session(session_id, label, status, message, activity)
             if status == "error" and previous_status != "error":
                 self._play_alert_sound()
                 self._notify_desktop(label)
@@ -106,6 +116,7 @@ class SessionManager:
                 del self._updated_at[session_id]
                 self._statuses.pop(session_id, None)
                 self._labels.pop(session_id, None)
+                self._messages.pop(session_id, None)
                 self.panel.remove_session(session_id)
 
         self._update_tray_icon(self._aggregate_status())
@@ -113,21 +124,8 @@ class SessionManager:
         self._resync_watched_files(paths)
 
     def _play_alert_sound(self) -> None:
-        # QApplication.beep() usa o "system bell" do X11, que em muitos
-        # ambientes (KDE Plasma incluso) fica sem áudio de verdade roteado —
-        # paplay/pw-play tocam um som real pelo servidor de áudio.
-        for player in ("paplay", "pw-play"):
-            if shutil.which(player) and ALERT_SOUND.exists():
-                try:
-                    subprocess.Popen(
-                        [player, *ALERT_VOLUME_ARGS[player], str(ALERT_SOUND)],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-                    return
-                except OSError:
-                    continue
-        QApplication.beep()
+        if self.config.alert_beep_enabled:
+            play_sound(ALERT_SOUND, ALERT_VOLUME_ARGS)
 
     def _notify_desktop(self, label: str) -> None:
         if not shutil.which("notify-send"):
@@ -190,10 +188,25 @@ class SessionManager:
         toggle.triggered.connect(self._toggle_panel)
         self.menu.addAction(toggle)
 
+        settings_action = QAction("Configurações...", self.menu)
+        settings_action.triggered.connect(self._open_settings)
+        self.menu.addAction(settings_action)
+
         self.menu.addSeparator()
         quit_action = QAction("Sair", self.menu)
         quit_action.triggered.connect(QApplication.quit)
         self.menu.addAction(quit_action)
+
+    def _open_settings(self) -> None:
+        if self._settings_dialog is None:
+            self._settings_dialog = SettingsDialog(self.config, self._on_config_changed, parent=self.panel)
+        self._settings_dialog.show()
+        self._settings_dialog.raise_()
+        self._settings_dialog.activateWindow()
+
+    def _on_config_changed(self, config: Config) -> None:
+        config.save()
+        self.panel.apply_config(config)
 
     def _toggle_panel(self) -> None:
         showing = not self.panel.isVisible()

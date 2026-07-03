@@ -16,9 +16,10 @@ def main() -> None:
     parser.add_argument("session_id", help="Identificador único da sessão (ex.: nome da janela/aba)")
     parser.add_argument("status", choices=STATUSES, help="idle=verde, working=amarelo, error=vermelho")
     parser.add_argument("--label", help="Texto exibido no semáforo (padrão: o próprio session_id)")
+    parser.add_argument("--message", help="Texto exibido no balão de fala do mascote (opcional)")
     args = parser.parse_args()
 
-    path = write_status(args.session_id, args.status, args.label)
+    path = write_status(args.session_id, args.status, args.label, message=args.message)
     print(f"status de '{args.session_id}' -> {args.status} ({path})")
 
 
