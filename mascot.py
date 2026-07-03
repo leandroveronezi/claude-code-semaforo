@@ -10,6 +10,7 @@ Rover usa "Idle"/"Thinking"/"GetAttention" em vez de "Idle1_1"/"Processing"/
 """
 import json
 import random
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -28,6 +29,18 @@ DEFAULT_AGENT = "Clippy"
 DEFAULT_STATUS_ANIMATION = "idle"
 ENTRANCE_ANIMATION = "Show"
 EXIT_ANIMATION = "Hide"
+RELIEF_ANIMATION = "Congratulate"  # gesto rápido ao sair de erro pra idle
+
+# atividade (vinda do tool_name real, via hooks/status_hook.py) -> animação
+# preferida, quando o personagem tiver essa animação pro status atual. Sem
+# atividade reconhecida, cai no sorteio entre as candidatas do status.
+ACTIVITY_ANIMATION = {
+    "thinking": "Thinking",
+    "writing": "Writing",
+    "searching": "Searching",
+    "processing": "Processing",
+}
+SOUND_COOLDOWN_SECONDS = 4.0
 
 _agent_data_cache: dict[str, dict] = {}
 _pixmap_cache: dict[str, QPixmap] = {}
@@ -73,16 +86,19 @@ class MascotWidget(QWidget):
 
         self._sound_enabled = sound_enabled
         self._status = DEFAULT_STATUS_ANIMATION
+        self._activity: str | None = None
         self._agent_name: str | None = None
         self._animation_name: str | None = None
         self._last_animation_by_status: dict[str, str] = {}
+        self._sound_last_played: dict[str, float] = {}
         self._frames: list[dict] = []
         self._frame_index = 0
         self._loop = True
         # tocando Show/Hide (entrada/saída) — play_status() não deve interromper,
-        # só guarda o status pendente pra aplicar assim que a transição acabar
+        # só guarda o status/atividade pendente pra aplicar assim que a transição acabar
         self._transitional = False
         self._pending_status: str | None = None
+        self._pending_activity: str | None = None
         self._once_callback: Callable[[], None] | None = None
 
         self._timer = QTimer(self)
@@ -100,40 +116,63 @@ class MascotWidget(QWidget):
         self._frame_width, self._frame_height = self._data["framesize"]
         self._animation_name = None  # força reresolver a animação do status atual
         self._transitional = False
-        self.play_status(self._status)
+        self.play_status(self._status, self._activity)
 
     def set_sound_enabled(self, enabled: bool) -> None:
         self._sound_enabled = enabled
 
-    def play_status(self, status: str) -> None:
+    def play_status(self, status: str, activity: str | None = None) -> None:
         if self._transitional:
             self._pending_status = status
+            self._pending_activity = activity
             return
-        if status == self._status and self._animation_name is not None:
-            return  # já tocando algo pra esse status, não interrompe no meio
-        self._status = status
         status_animations = self._data["status_animations"]
         candidates = status_animations.get(status) or status_animations[DEFAULT_STATUS_ANIMATION]
-        self._animation_name = self._pick_animation(status, candidates)
-        self._frames = self._data["animations"][self._animation_name]["frames"]
+        animation_name = self._resolve_animation(status, activity, candidates)
+        if status == self._status and animation_name == self._animation_name:
+            return  # já tocando exatamente isso, não interrompe no meio
+        self._status = status
+        self._activity = activity
+        self._animation_name = animation_name
+        self._frames = self._data["animations"][animation_name]["frames"]
         self._frame_index = 0
         self._loop = True
         self._show_current_frame()
 
-    def play_intro(self, on_finished: Callable[[], None] | None = None) -> None:
-        def _resume() -> None:
-            self._transitional = False
-            status = self._pending_status if self._pending_status is not None else self._status
-            self._pending_status = None
-            self._animation_name = None  # força tocar o status mesmo se igual ao anterior
-            self.play_status(status)
-            if on_finished:
-                on_finished()
+    def _resolve_animation(self, status: str, activity: str | None, candidates: list[str]) -> str:
+        preferred = ACTIVITY_ANIMATION.get(activity)
+        if preferred and preferred in candidates:
+            return preferred
+        return self._pick_animation(status, candidates)
 
-        self._play_once(ENTRANCE_ANIMATION, _resume)
+    def play_intro(self, on_finished: Callable[[], None] | None = None) -> None:
+        self._play_once_then_resume(ENTRANCE_ANIMATION, on_finished)
+
+    def play_relief(
+        self, status: str, activity: str | None = None, on_finished: Callable[[], None] | None = None
+    ) -> None:
+        """Gesto rápido de alívio/comemoração (ex.: saindo de erro pra idle)
+        antes de assentar no status normal informado."""
+        self._pending_status = status
+        self._pending_activity = activity
+        self._play_once_then_resume(RELIEF_ANIMATION, on_finished)
 
     def play_outro(self, on_finished: Callable[[], None]) -> None:
         self._play_once(EXIT_ANIMATION, on_finished)
+
+    def _play_once_then_resume(self, animation_name: str, on_finished: Callable[[], None] | None) -> None:
+        def _resume() -> None:
+            self._transitional = False
+            status = self._pending_status if self._pending_status is not None else self._status
+            activity = self._pending_activity
+            self._pending_status = None
+            self._pending_activity = None
+            self._animation_name = None  # força tocar o status mesmo se igual ao anterior
+            self.play_status(status, activity)
+            if on_finished:
+                on_finished()
+
+        self._play_once(animation_name, _resume)
 
     def _play_once(self, animation_name: str, on_finished: Callable[[], None] | None) -> None:
         self._transitional = True
@@ -167,8 +206,7 @@ class MascotWidget(QWidget):
             return
         if self._frame_index + 1 >= len(self._frames):
             if self._loop:
-                self._frame_index = 0
-                self._show_current_frame()
+                self._on_loop_restart()
             else:
                 callback = self._once_callback
                 self._once_callback = None
@@ -178,16 +216,39 @@ class MascotWidget(QWidget):
         self._frame_index += 1
         self._show_current_frame()
 
+    def _on_loop_restart(self) -> None:
+        # se a animação atual é a "certa" pra atividade real (ex.: ainda
+        # rodando Bash), continua nela — repetir faz sentido, ela ainda
+        # reflete o que está acontecendo. Sem atividade conhecida, sorteia
+        # de novo a cada volta pra não ficar preso na mesma sequência/som
+        # por um status "working" que dura muito tempo.
+        preferred = ACTIVITY_ANIMATION.get(self._activity)
+        if not (preferred and preferred == self._animation_name):
+            status_animations = self._data["status_animations"]
+            candidates = status_animations.get(self._status) or status_animations[DEFAULT_STATUS_ANIMATION]
+            self._animation_name = self._pick_animation(self._status, candidates)
+            self._frames = self._data["animations"][self._animation_name]["frames"]
+        self._frame_index = 0
+        self._show_current_frame()
+
     def _show_current_frame(self) -> None:
         if not self._frames:
             return
         frame = self._frames[self._frame_index]
         self._timer.start(frame["duration"])
+        sound_id = frame.get("sound")
         # isVisible() já considera a janela do painel estar oculta (não só
-        # este widget) — sem plateia, sem som.
-        if self._sound_enabled and frame.get("sound") and self.isVisible():
-            play_sound(_sound_path(self._agent_name, frame["sound"]))
+        # este widget) — sem plateia, sem som. O cooldown evita o mesmo som
+        # martelando toda hora (algumas animações repetem o mesmo id várias
+        # vezes numa única passada, e loops longos repetiriam de novo a cada volta).
+        if self._sound_enabled and sound_id and self.isVisible() and self._sound_ready(sound_id):
+            play_sound(_sound_path(self._agent_name, sound_id))
+            self._sound_last_played[sound_id] = time.monotonic()
         self.update()
+
+    def _sound_ready(self, sound_id: str) -> bool:
+        last = self._sound_last_played.get(sound_id)
+        return last is None or (time.monotonic() - last) >= SOUND_COOLDOWN_SECONDS
 
     def paintEvent(self, _event) -> None:
         if not self._frames:

@@ -9,6 +9,7 @@ Uso: status_hook.py <idle|working|error|remove>
 """
 import json
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -20,6 +21,11 @@ from status_store import remove_status, write_status  # noqa: E402
 # ferramenta à toa, então só limpamos o balão.
 MESSAGE_EVENTS = {"Stop", "Notification", "PermissionRequest"}
 TRANSCRIPT_SCAN_LINES = 50
+# pequena folga antes de ler o transcript no Stop: a última mensagem do
+# assistente pode ainda não ter sido gravada em disco no instante exato em
+# que o hook dispara (visto na prática — sem isso, às vezes pega a
+# penúltima mensagem em vez da resposta final de verdade).
+STOP_READ_DELAY_SECONDS = 0.25
 
 # tool_name (PreToolUse/PostToolUse) -> atividade, pra escolher uma pose do
 # mascote coerente com o que está acontecendo de verdade em vez de sortear
@@ -46,24 +52,31 @@ def _activity_for(payload: dict) -> str | None:
     return None
 
 
-def _last_assistant_text(transcript_path: str | None) -> str | None:
+def _last_assistant_text(transcript_path: str | None, delay: float = 0.0) -> str | None:
     """Lê o fim do transcript (formato interno do Claude Code, não
     documentado oficialmente — pode mudar entre versões) e devolve o texto
     da última resposta do assistente, ou None se não achar/der erro."""
     if not transcript_path:
         return None
+    if delay:
+        time.sleep(delay)
     try:
         lines = Path(transcript_path).read_text(encoding="utf-8").splitlines()
-        for line in reversed(lines[-TRANSCRIPT_SCAN_LINES:]):
-            entry = json.loads(line)
-            if entry.get("type") != "assistant":
-                continue
-            content = entry.get("message", {}).get("content", [])
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
-                    return block["text"]
-    except Exception:
+    except OSError:
         return None
+    for line in reversed(lines[-TRANSCRIPT_SCAN_LINES:]):
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            # uma linha isolada mal formada (ex.: escrita ainda em andamento)
+            # não deve derrubar a busca inteira — só pula pra anterior.
+            continue
+        if entry.get("type") != "assistant":
+            continue
+        content = entry.get("message", {}).get("content", [])
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
+                return block["text"]
     return None
 
 
@@ -128,7 +141,7 @@ def main() -> None:
             if event in ("Notification", "PermissionRequest"):
                 message = _pending_request_text(payload) or _last_assistant_text(payload.get("transcript_path"))
             else:
-                message = _last_assistant_text(payload.get("transcript_path"))
+                message = _last_assistant_text(payload.get("transcript_path"), delay=STOP_READ_DELAY_SECONDS)
         activity = _activity_for(payload)
         write_status(session_id, target, label=label, message=message, activity=activity)
 

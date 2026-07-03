@@ -49,9 +49,13 @@ class _SessionColumn(QWidget):
         return self.lights.status
 
     def update_session(self, label: str, status: str, message: str | None, activity: str | None = None) -> None:
+        previous_status = self.status
         self.lights.set_label(label)
         self.lights.set_status(status)
-        self.mascot.play_status(status, activity)
+        if status == "idle" and previous_status == "error":
+            self.mascot.play_relief(status, activity)
+        else:
+            self.mascot.play_status(status, activity)
         self.bubble.set_message(message)
 
     def update_config(self, config: Config) -> None:
