@@ -6,7 +6,10 @@ from PyQt6.QtCore import QRectF, QSize, Qt
 from PyQt6.QtGui import QColor, QFontMetrics, QPainter, QPainterPath
 from PyQt6.QtWidgets import QWidget
 
-BUBBLE_WIDTH = 150
+MIN_BUBBLE_WIDTH = 150
+MAX_BUBBLE_WIDTH = 260
+WIDTH_STEP = 20  # incremento ao alargar o balão pra evitar textos longos virando uma "tripa" vertical
+TARGET_MAX_LINES = 3  # acima disso, prefere alargar (até MAX_BUBBLE_WIDTH) a empilhar mais linhas
 PADDING = 8
 TAIL_HEIGHT = 7  # o quanto o rabinho protrai pra fora do corpo, em qualquer lado
 TAIL_WIDTH = 12  # largura da base do rabinho, na aresta em que ele nasce
@@ -41,6 +44,7 @@ class SpeechBubble(QWidget):
 
         self._preview = ""
         self._lines: list[str] = []
+        self._width = MIN_BUBBLE_WIDTH
         self._tail_side = "bottom"  # "bottom" | "left" | "right"
         self._char_limit = DEFAULT_PREVIEW_LIMIT
         self.setFixedSize(0, 0)
@@ -59,7 +63,7 @@ class SpeechBubble(QWidget):
             return QSize(0, 0)
         metrics = QFontMetrics(self.font())
         text_height = len(self._lines) * (metrics.height() + LINE_SPACING) - LINE_SPACING
-        return QSize(BUBBLE_WIDTH, int(text_height + 2 * PADDING))
+        return QSize(self._width, int(text_height + 2 * PADDING))
 
     def set_message(self, text: str | None) -> None:
         if not text:
@@ -76,7 +80,7 @@ class SpeechBubble(QWidget):
 
         self._preview = preview
         self.setToolTip(text)
-        self._lines = self._wrap_lines(preview)
+        self._width, self._lines = self._layout(preview)
         self._apply_size()
 
     def set_tail_side(self, side: str) -> None:
@@ -95,14 +99,26 @@ class SpeechBubble(QWidget):
             self.setFixedSize(body.width() + TAIL_HEIGHT, body.height())
         self.update()
 
-    def _wrap_lines(self, text: str) -> list[str]:
+    def _layout(self, text: str) -> tuple[int, list[str]]:
+        """Escolhe a largura do balão pro texto: começa no mínimo e só alarga
+        (até o máximo) se isso reduzir a pilha de linhas — testos curtos
+        ficam compactos, textos longos preferem um retângulo mais largo a
+        virarem uma coluna comprida."""
         metrics = QFontMetrics(self.font())
-        max_width = BUBBLE_WIDTH - 2 * PADDING
+        width = MIN_BUBBLE_WIDTH
+        lines = self._wrap_at(text, width, metrics)
+        while len(lines) > TARGET_MAX_LINES and width < MAX_BUBBLE_WIDTH:
+            width = min(width + WIDTH_STEP, MAX_BUBBLE_WIDTH)
+            lines = self._wrap_at(text, width, metrics)
+        return width, lines
+
+    def _wrap_at(self, text: str, width: int, metrics: QFontMetrics) -> list[str]:
+        max_text_width = width - 2 * PADDING
         lines: list[str] = []
         current = ""
         for word in text.split(" "):
             candidate = f"{current} {word}".strip()
-            if metrics.horizontalAdvance(candidate) <= max_width or not current:
+            if metrics.horizontalAdvance(candidate) <= max_text_width or not current:
                 current = candidate
             else:
                 lines.append(current)
@@ -119,11 +135,11 @@ class SpeechBubble(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         if self._tail_side == "bottom":
-            body_rect = QRectF(0, 0, BUBBLE_WIDTH, self.height() - TAIL_HEIGHT)
+            body_rect = QRectF(0, 0, self._width, self.height() - TAIL_HEIGHT)
         elif self._tail_side == "left":
-            body_rect = QRectF(TAIL_HEIGHT, 0, BUBBLE_WIDTH, self.height())
+            body_rect = QRectF(TAIL_HEIGHT, 0, self._width, self.height())
         else:  # right
-            body_rect = QRectF(0, 0, BUBBLE_WIDTH, self.height())
+            body_rect = QRectF(0, 0, self._width, self.height())
 
         path = QPainterPath()
         path.addRoundedRect(body_rect, CORNER_RADIUS, CORNER_RADIUS)

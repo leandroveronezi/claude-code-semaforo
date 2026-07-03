@@ -46,3 +46,5 @@ ENV/
 # Project specific
 .claude/
 sessions/
+
+clippy.js/

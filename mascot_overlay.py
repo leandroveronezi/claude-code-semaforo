@@ -16,8 +16,10 @@ janela inteira que é recalculada ao redor dele — não o contrário — pra o
 personagem nunca "pular" quando o balão aparece/cresce. O balão cresce pro
 lado que tiver espaço na tela: acima por padrão, ao lado se o mascote
 estiver perto do topo, espelhado se estiver perto da borda direita/esquerda."""
+import math
+
 from PyQt6.QtCore import QPoint, QRect, QSettings, QSize, Qt, QTimer
-from PyQt6.QtGui import QGuiApplication
+from PyQt6.QtGui import QCursor, QGuiApplication
 from PyQt6.QtWidgets import QWidget
 
 from config import Config
@@ -58,6 +60,7 @@ class MascotOverlay(QWidget):
         self._hovering = False
 
         self._tier = "idle"  # "error" | "working" | "idle" — o que está em tela agora
+        self._target_visible = False  # o que set_visible_animated() já mandou tocar (não confundir com isVisible(): este widget continua "visível" pro Qt até a Hide terminar e chamar hide())
         self._last_pose_tier = "idle"  # pra saber quando aplicar o gesto de alívio (erro -> ocioso)
         self._error_entries: list[Entry] = []
         self._working_entries: list[Entry] = []
@@ -166,6 +169,8 @@ class MascotOverlay(QWidget):
         self._last_pose_tier = tier
         if tier == "idle" and previous == "error":
             self.mascot.play_relief(tier, activity)
+        elif tier == "idle" and previous == "working":
+            self.mascot.play_success(tier, activity)
         else:
             self.mascot.play_status(tier, activity)
 
@@ -233,8 +238,9 @@ class MascotOverlay(QWidget):
 
     # -- visibilidade -----------------------------------------------------------
     def set_visible_animated(self, visible: bool) -> None:
-        if visible == self.isVisible():
+        if visible == self._target_visible:
             return
+        self._target_visible = visible
         if visible:
             self.show()
             self.raise_()
@@ -253,10 +259,34 @@ class MascotOverlay(QWidget):
         self._idle_last_ms = int(config.mascot_idle_last_seconds * 1000)
         self.bubble.set_char_limit(config.mascot_message_limit)
 
-    # -- hover (pausa a rotação) -----------------------------------------------------------
+    # -- hover (pausa a rotação e dá uma olhada pro cursor) -----------------------------------
     def enterEvent(self, event) -> None:
         self._hovering = True
+        self._glance_at_cursor()
         super().enterEvent(event)
+
+    def _glance_at_cursor(self) -> None:
+        mascot_center = self.mascot.mapToGlobal(QPoint(0, 0)) + QPoint(
+            self.mascot.width() // 2, self.mascot.height() // 2
+        )
+        cursor = QCursor.pos()
+        self.mascot.play_glance(self._direction_to(mascot_center, cursor))
+
+    @staticmethod
+    def _direction_to(center: QPoint, point: QPoint) -> str:
+        """Mesma fórmula do clippy.js original (_getDirection), só que usando
+        a posição atual do cursor em vez do ponto clicado — não temos clique,
+        mas temos a posição real do mouse o tempo todo."""
+        a = center.y() - point.y()
+        b = center.x() - point.x()
+        r = math.degrees(math.atan2(a, b))
+        if -45 <= r < 45:
+            return "Right"
+        if 45 <= r < 135:
+            return "Up"
+        if r >= 135 or r < -135:
+            return "Left"
+        return "Down"
 
     def leaveEvent(self, event) -> None:
         self._hovering = False

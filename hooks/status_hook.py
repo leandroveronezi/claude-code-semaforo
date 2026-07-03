@@ -35,7 +35,7 @@ TOOL_ACTIVITY = {
     "Edit": "writing",
     "Write": "writing",
     "NotebookEdit": "writing",
-    "Read": "searching",
+    "Read": "reading",
     "Grep": "searching",
     "Glob": "searching",
     "WebSearch": "searching",
