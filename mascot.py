@@ -124,6 +124,7 @@ class MascotWidget(QWidget):
         self._current_animation_name: str | None = None
         self._current_frame_index = 0
         self._current_frame: dict | None = None
+        self._last_visible_frame: dict | None = None  # último frame COM imagem — evita piscar em branco nas trocas
         self._exiting = False
         self._end_callback: Callable[[str, bool], None] | None = None
         self._started = False
@@ -168,6 +169,7 @@ class MascotWidget(QWidget):
         self._current_animation = None
         self._current_animation_name = None
         self._current_frame = None
+        self._last_visible_frame = None  # personagem trocou: sprite antigo não serve mais de placeholder
         self._transitional = False
         self.play_status(self._status, self._activity)
 
@@ -378,6 +380,9 @@ class MascotWidget(QWidget):
         if not (self._at_last_frame() and use_exit_branching):
             self._current_frame = frames[self._current_frame_index]
 
+        if self._current_frame and self._current_frame.get("images"):
+            self._last_visible_frame = self._current_frame
+
         self._draw_current_frame()
 
         duration = self._current_frame.get("duration", 0)
@@ -411,12 +416,17 @@ class MascotWidget(QWidget):
         return last is None or (time.monotonic() - last) >= SOUND_COOLDOWN_SECONDS
 
     def paintEvent(self, _event) -> None:
-        frame = self._current_frame
+        # desenha sempre o último frame COM imagem, não necessariamente o
+        # frame "lógico" atual — frames de puro controle (branching) e o
+        # instante entre uma animação terminar e a próxima começar não têm
+        # imagem própria; se pintássemos em branco nesses casos, o mascote
+        # piscaria a cada troca de animação.
+        frame = self._last_visible_frame
         if not frame:
             return
         images = frame.get("images") or []
         if not images:
-            return  # frame de puro controle (branching) — sem imagem, fica em branco
+            return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         target = QRectF(self.rect())
