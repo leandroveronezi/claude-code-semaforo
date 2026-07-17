@@ -154,6 +154,10 @@ class MascotWidget(QWidget):
 
         self.set_agent(agent_name)
 
+    def set_size(self, size: tuple[int, int]) -> None:
+        self.setFixedSize(*size)
+        self.update()
+
     def set_agent(self, name: str) -> None:
         if name == self._agent_name:
             return

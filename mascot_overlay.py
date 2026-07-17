@@ -2,14 +2,21 @@
 topo, arrastável), que reflete o humor agregado de todas as sessões
 monitoradas — em vez de um mascote por sessão.
 
-Prioridade de humor: erro > trabalhando > ocioso (mesma lógica do ícone da
-bandeja). Quando há mais de uma sessão no mesmo nível:
+Prioridade de humor (pose do mascote): erro > trabalhando > ocioso (mesma
+lógica do ícone da bandeja). Quando há mais de uma sessão no mesmo nível:
 - erro/trabalhando: revezamos entre todas em loop, por ordem de chegada
   (a que virou erro/working há mais tempo aparece primeiro).
 - ocioso: é só uma notificação passageira (nada urgente) — cada sessão que
   termina entra numa fila consumida uma única vez, a última entrada fica
   mais tempo em tela, e depois some tudo até a próxima chegar.
-Em ambos os casos, passar o mouse por cima pausa a contagem.
+  Só que, se QUALQUER outra sessão ainda está em erro/trabalhando, o
+  mascote nunca chega a ficar "ocioso" (a pior sessão manda no tier) — nesse
+  caso o item da fila de ociosos é intercalado no próprio rodízio de
+  erro/trabalhando (ver _combined_entries), pra a mensagem de quem terminou
+  não ficar presa na fila indefinidamente enquanto outra sessão segue
+  ocupada. A pose continua refletindo o tier ocupado; só o balão muda de
+  conteúdo na vez desse item.
+Em todos os casos, passar o mouse por cima pausa a contagem.
 
 O mascote fica ancorado no ponto onde foi arrastado (self._anchor); é a
 janela inteira que é recalculada ao redor dele — não o contrário — pra o
@@ -32,11 +39,20 @@ MARGIN = 12  # respiro entre o conteúdo (mascote+balão) e a borda da janela
 GAP = 2  # distância entre o corpo do mascote e o corpo do balão (o rabinho preenche visualmente)
 DEFAULT_POS = QPoint(160, 160)
 RAISE_INTERVAL_MS = 700  # ver comentário em _AlwaysOnTopTooltip (semaphore_panel.py)
-MASCOT_SIZE = (MASCOT_WIDTH, MASCOT_HEIGHT)
+
+
+def _mascot_size_for(scale_percent: int) -> tuple[int, int]:
+    return (round(MASCOT_WIDTH * scale_percent / 100), round(MASCOT_HEIGHT * scale_percent / 100))
 
 TICK_MS = 250  # granularidade do relógio de rotação (permite pausar no hover sem perder precisão)
 
 Entry = tuple[str, "str | None", "str | None"]  # (label, message, activity)
+
+# marcador de atividade usado só internamente pra sinalizar, dentro do rodízio
+# de error/working, um "slot" que na verdade é uma notificação de sessão que
+# acabou de ficar ociosa (ver _combined_entries) — nunca é uma activity real
+# de TOOL_ACTIVITY, então a pose cai no default do tier (não muda pra idle).
+IDLE_DONE_MARKER = "__idle_done__"
 
 
 class MascotOverlay(QWidget):
@@ -70,6 +86,7 @@ class MascotOverlay(QWidget):
         self._rotation_ms = int(config.mascot_rotation_seconds * 1000)
         self._idle_last_ms = int(config.mascot_idle_last_seconds * 1000)
         self._current_duration_ms = self._rotation_ms
+        self._mascot_size = _mascot_size_for(config.mascot_scale)
 
         self._raise_timer = QTimer(self)
         self._raise_timer.setInterval(RAISE_INTERVAL_MS)
@@ -81,16 +98,30 @@ class MascotOverlay(QWidget):
 
         self._settings = QSettings("SemaforoStatus", "Posicoes")
         saved_pos = self._settings.value(SETTINGS_KEY)
-        self._anchor = saved_pos if isinstance(saved_pos, QPoint) else DEFAULT_POS
+        self._anchor = self._clamp_to_screen(saved_pos if isinstance(saved_pos, QPoint) else DEFAULT_POS)
 
         # sem layout: mascote e balão são posicionados manualmente em
         # _relayout(), porque a posição relativa entre os dois muda conforme
         # a borda da tela mais próxima do mascote.
         self.bubble = SpeechBubble(self)
         self.bubble.set_char_limit(config.mascot_message_limit)
-        self.mascot = MascotWidget(config.mascot, config.mascot_sounds_enabled, self, size=MASCOT_SIZE)
+        self.mascot = MascotWidget(config.mascot, config.mascot_sounds_enabled, self, size=self._mascot_size)
 
         self._relayout()
+
+        # o clamp acima só protege a posição salva ao *abrir* o app; se o
+        # monitor mudar com o app já rodando — desconectado, trocado por um
+        # menor, ou simplesmente reposicionado (dock/undock rearranja a
+        # geometria de uma tela que continua "a mesma" pro Qt, sem gerar
+        # screenAdded/screenRemoved) — a âncora antiga pode ficar fora de
+        # qualquer tela visível até reiniciar. Reagimos a mudanças de tela em
+        # tempo real pra cobrir todos esses casos.
+        app = QGuiApplication.instance()
+        app.screenAdded.connect(self._on_screen_added)
+        app.screenRemoved.connect(self._on_screens_changed)
+        app.primaryScreenChanged.connect(self._on_screens_changed)
+        for screen in app.screens():
+            self._watch_screen(screen)
 
     # -- entrada de dados (SessionManager) -----------------------------------------
     def sync(self, error_entries: list[Entry], working_entries: list[Entry]) -> None:
@@ -103,14 +134,20 @@ class MascotOverlay(QWidget):
         if tier != self._tier:
             self._enter_tier(tier)
         elif tier != "idle":
-            entries = self._entries_for(tier)
+            entries = self._combined_entries(tier)
             if entries:
                 self._rotation_index %= len(entries)
             self._show_current()
 
     def enqueue_idle(self, label: str, message: "str | None") -> None:
         """Sessão acabou de ficar ociosa: entra na fila de notificações,
-        mostrada uma única vez (não fica em loop como erro/working)."""
+        mostrada uma única vez (não fica em loop como erro/working).
+
+        Se outra sessão ainda está em error/working, essa entrada não é
+        exibida "sozinha" (o tier só vira idle quando TODAS as sessões
+        ficarem ociosas) — em vez disso ela é intercalada no rodízio de
+        error/working já em andamento (ver _combined_entries), pra não ficar
+        presa na fila indefinidamente enquanto outra sessão segue ocupada."""
         self._idle_queue.append((label, message))
         if self._tier != "idle":
             return
@@ -131,6 +168,17 @@ class MascotOverlay(QWidget):
             return self._working_entries
         return []
 
+    def _combined_entries(self, tier: str) -> list[Entry]:
+        """Entradas do rodízio de error/working, com o item mais antigo da
+        fila de idle (se houver) intercalado no final — pra uma sessão que
+        terminou não ficar muda enquanto outra sessão segue ocupada. A pose
+        do mascote continua refletindo `tier` normalmente (ver IDLE_DONE_MARKER)."""
+        entries = list(self._entries_for(tier))
+        if self._idle_queue:
+            label, message = self._idle_queue[0]
+            entries.append((f"{label} (concluída)", message, IDLE_DONE_MARKER))
+        return entries
+
     def _enter_tier(self, tier: str) -> None:
         self._tier = tier
         self._rotation_index = 0
@@ -139,7 +187,7 @@ class MascotOverlay(QWidget):
 
     def _show_current(self) -> None:
         if self._tier in ("error", "working"):
-            entries = self._entries_for(self._tier)
+            entries = self._combined_entries(self._tier)
             if not entries:
                 self._apply_pose(self._tier, None)
                 self.bubble.set_message(None)
@@ -147,7 +195,9 @@ class MascotOverlay(QWidget):
             else:
                 self._rotation_index %= len(entries)
                 label, message, activity = entries[self._rotation_index]
-                self._apply_pose(self._tier, activity)
+                # slot de "sessão terminou" intercalado: pose continua a do
+                # tier atual (não muda pra idle), só o balão muda de conteúdo.
+                self._apply_pose(self._tier, None if activity == IDLE_DONE_MARKER else activity)
                 self.bubble.set_message(message)
                 self.setToolTip(self._tooltip_text(label, message))
             self._current_duration_ms = self._rotation_ms
@@ -178,7 +228,7 @@ class MascotOverlay(QWidget):
         if self._hovering:
             return
         if self._tier in ("error", "working"):
-            if not self._entries_for(self._tier):
+            if not self._combined_entries(self._tier):
                 return
         elif not self._idle_queue:
             return
@@ -187,8 +237,18 @@ class MascotOverlay(QWidget):
             return
         self._elapsed_ms = 0
         if self._tier in ("error", "working"):
-            entries = self._entries_for(self._tier)
-            self._rotation_index = (self._rotation_index + 1) % len(entries)
+            entries = self._combined_entries(self._tier)
+            self._rotation_index %= len(entries)
+            advance_from = self._rotation_index
+            # a vez do slot "sessão terminou" passou -> consome da fila
+            # (notificação de idle é de leitura única, não fica em loop). Ele
+            # é sempre o último item da lista (ver _combined_entries), então
+            # avançar a partir dele é sempre voltar ao início.
+            if entries[self._rotation_index][2] == IDLE_DONE_MARKER:
+                self._idle_queue.pop(0)
+                entries = self._combined_entries(self._tier)
+                advance_from = -1
+            self._rotation_index = (advance_from + 1) % len(entries) if entries else 0
         else:
             self._idle_queue.pop(0)
         self._show_current()
@@ -196,9 +256,46 @@ class MascotOverlay(QWidget):
     def _tooltip_text(self, label: str, message: "str | None") -> str:
         return f"{label}\n\n{message}" if message else label
 
+    def _watch_screen(self, screen) -> None:
+        """Passa a escutar mudanças de geometria de UMA tela específica —
+        redocking/undocking costuma só reposicionar/redimensionar uma tela
+        que já existia (mesmo QScreen), o que não dispara screenAdded nem
+        screenRemoved."""
+        screen.geometryChanged.connect(self._on_screens_changed)
+        screen.availableGeometryChanged.connect(self._on_screens_changed)
+
+    def _on_screen_added(self, screen) -> None:
+        self._watch_screen(screen)
+        self._on_screens_changed()
+
+    def _on_screens_changed(self, _screen=None) -> None:
+        """Monitor conectado/desconectado/reposicionado com o app já
+        rodando: reancora se a posição atual ficou fora de qualquer tela
+        visível."""
+        clamped = self._clamp_to_screen(self._anchor)
+        if clamped != self._anchor:
+            self._anchor = clamped
+            self._settings.setValue(SETTINGS_KEY, self._anchor)
+            self._relayout()
+
+    def _clamp_to_screen(self, point: QPoint) -> QPoint:
+        """Garante que a âncora caia dentro de algum monitor conectado. Sem
+        isso, uma posição salva de um monitor que foi desconectado (ou
+        trocado por um com outra resolução) deixa o mascote fora de
+        qualquer tela visível — a janela existe, mas ninguém a vê."""
+        mascot_w, mascot_h = self._mascot_size
+        rect = QRect(point, QSize(mascot_w, mascot_h))
+        screen = QGuiApplication.screenAt(rect.center()) or QGuiApplication.primaryScreen()
+        if screen is None:
+            return point
+        bounds = screen.availableGeometry()
+        x = min(max(point.x(), bounds.left()), bounds.right() - mascot_w)
+        y = min(max(point.y(), bounds.top()), bounds.bottom() - mascot_h)
+        return QPoint(x, y)
+
     # -- posicionamento inteligente do balão -----------------------------------------------------------
     def _relayout(self) -> None:
-        mascot_w, mascot_h = MASCOT_SIZE
+        mascot_w, mascot_h = self._mascot_size
         mascot_rect = QRect(self._anchor, QSize(mascot_w, mascot_h))
 
         screen = QGuiApplication.screenAt(mascot_rect.center()) or QGuiApplication.primaryScreen()
@@ -218,11 +315,15 @@ class MascotOverlay(QWidget):
             near_right = mascot_rect.right() + GAP + BUBBLE_TAIL_LENGTH + body.width() > screen_rect.right()
             self.bubble.set_tail_side("left" if near_right else "right")
             bubble_y = mascot_rect.center().y() - self.bubble.height() // 2
+            bubble_y = min(bubble_y, screen_rect.bottom() - self.bubble.height())
+            bubble_y = max(bubble_y, screen_rect.top())
             bubble_x = (
                 mascot_rect.left() - GAP - self.bubble.width()
                 if near_right
                 else mascot_rect.right() + GAP
             )
+            bubble_x = min(bubble_x, screen_rect.right() - self.bubble.width())
+            bubble_x = max(bubble_x, screen_rect.left())
         else:
             self.bubble.set_tail_side("bottom")
             bubble_y = mascot_rect.top() - GAP - self.bubble.height()
@@ -258,6 +359,13 @@ class MascotOverlay(QWidget):
         self._rotation_ms = int(config.mascot_rotation_seconds * 1000)
         self._idle_last_ms = int(config.mascot_idle_last_seconds * 1000)
         self.bubble.set_char_limit(config.mascot_message_limit)
+
+        new_size = _mascot_size_for(config.mascot_scale)
+        if new_size != self._mascot_size:
+            self._mascot_size = new_size
+            self.mascot.set_size(new_size)
+            self._anchor = self._clamp_to_screen(self._anchor)
+        self._relayout()
 
     # -- hover (pausa a rotação e dá uma olhada pro cursor) -----------------------------------
     def enterEvent(self, event) -> None:

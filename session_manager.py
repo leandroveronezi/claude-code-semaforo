@@ -6,11 +6,12 @@ import time
 from pathlib import Path
 
 from PyQt6.QtCore import QFileSystemWatcher, QPoint, QSettings, Qt, QTimer
-from PyQt6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
+from PyQt6.QtGui import QAction, QColor, QGuiApplication, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from audio import play_sound
 from config import Config
+from foreground import active_window_pid
 from light_column import LIGHT_COLORS
 from mascot_overlay import MascotOverlay
 from semaphore_panel import SemaphorePanel
@@ -39,6 +40,7 @@ class SessionManager:
         self._labels: dict[str, str] = {}
         self._messages: dict[str, str | None] = {}
         self._activities: dict[str, str | None] = {}
+        self._pid_chains: dict[str, list[int]] = {}
         self._status_since: dict[str, float] = {}  # quando o status atual começou (ordem de chegada p/ mascote)
         self._manually_hidden = False  # usuário escondeu o painel enquanto havia sessões
         self.config = Config.load()
@@ -48,9 +50,20 @@ class SessionManager:
 
         saved_pos = self.settings.value(SETTINGS_KEY)
         if isinstance(saved_pos, QPoint):
-            self.panel.move(saved_pos)
+            self.panel.move(self._clamp_to_screen(saved_pos))
         self.panel.moved.connect(lambda pos: self.settings.setValue(SETTINGS_KEY, pos))
         self.panel.right_clicked.connect(self._toggle_panel)
+
+        # mesmo cuidado do MascotOverlay: o clamp acima só protege a posição
+        # salva ao abrir; dock/undock costuma reposicionar uma tela que já
+        # existia (sem screenAdded/screenRemoved), então também escutamos
+        # mudança de geometria pra reancorar o painel em tempo real.
+        app = QGuiApplication.instance()
+        app.screenAdded.connect(self._on_screen_added)
+        app.screenRemoved.connect(self._on_screens_changed)
+        app.primaryScreenChanged.connect(self._on_screens_changed)
+        for screen in app.screens():
+            self._watch_screen(screen)
 
         # QFileSystemWatcher dá atualização instantânea; o timer abaixo é só
         # um plano B, pois escritas atômicas (os.replace) às vezes derrubam o watch.
@@ -83,6 +96,37 @@ class SessionManager:
         self.fallback_timer.start()
         self.stale_timer.start()
 
+    @staticmethod
+    def _clamp_to_screen(point: QPoint) -> QPoint:
+        """Evita restaurar o painel numa posição que ficou fora de qualquer
+        monitor conectado (ex.: troca do monitor externo por um com outra
+        resolução/arranjo). Ver mesma lógica em MascotOverlay._clamp_to_screen."""
+        screen = QGuiApplication.screenAt(point) or QGuiApplication.primaryScreen()
+        if screen is None:
+            return point
+        bounds = screen.availableGeometry()
+        x = min(max(point.x(), bounds.left()), bounds.right())
+        y = min(max(point.y(), bounds.top()), bounds.bottom())
+        return QPoint(x, y)
+
+    def _watch_screen(self, screen) -> None:
+        screen.geometryChanged.connect(self._on_screens_changed)
+        screen.availableGeometryChanged.connect(self._on_screens_changed)
+
+    def _on_screen_added(self, screen) -> None:
+        self._watch_screen(screen)
+        self._on_screens_changed()
+
+    def _on_screens_changed(self, _screen=None) -> None:
+        """Monitor conectado/desconectado/reposicionado com o app já
+        rodando: reancora o painel se ele ficou fora de qualquer tela
+        visível."""
+        pos = self.panel.pos()
+        clamped = self._clamp_to_screen(pos)
+        if clamped != pos:
+            self.panel.move(clamped)
+            self.settings.setValue(SETTINGS_KEY, clamped)
+
     # -- descoberta de sessões -------------------------------------------------
     def _scan(self, *_args) -> None:
         # usamos o "updated_at" gravado dentro do próprio JSON (alta precisão,
@@ -110,6 +154,7 @@ class SessionManager:
             self._statuses[session_id] = status
             self._messages[session_id] = message
             self._activities[session_id] = activity
+            self._pid_chains[session_id] = data.get("pid_chain") or []
             if status != previous_status:
                 self._status_since[session_id] = time.time()
                 # "chegou" numa sessão ociosa vindo de outro estado -> notificação
@@ -119,8 +164,9 @@ class SessionManager:
                     self.mascot_overlay.enqueue_idle(label, message)
             self.panel.upsert_session(session_id, label, status, message)
             if status == "error" and previous_status != "error":
-                self._play_alert_sound()
-                self._notify_desktop(label)
+                if not self._session_in_foreground(session_id):
+                    self._play_alert_sound()
+                    self._notify_desktop(label)
 
         for session_id in list(self._updated_at):
             if session_id not in seen:
@@ -129,6 +175,7 @@ class SessionManager:
                 self._labels.pop(session_id, None)
                 self._messages.pop(session_id, None)
                 self._activities.pop(session_id, None)
+                self._pid_chains.pop(session_id, None)
                 self._status_since.pop(session_id, None)
                 self.panel.remove_session(session_id)
 
@@ -137,11 +184,26 @@ class SessionManager:
         self._sync_panel_visibility()
         self._resync_watched_files(paths)
 
+    def _session_in_foreground(self, session_id: str) -> bool:
+        """True só quando temos certeza de que a janela ativa pertence a essa
+        sessão (algum ancestral do processo que gravou o status é o dono da
+        janela em foco). Qualquer incerteza (Wayland, xprop ausente,
+        pid_chain vazia) volta False, pra não deixar de alertar por engano."""
+        pid_chain = self._pid_chains.get(session_id)
+        if not pid_chain:
+            return False
+        active_pid = active_window_pid()
+        if active_pid is None:
+            return False
+        return active_pid in pid_chain
+
     def _play_alert_sound(self) -> None:
         if self.config.alert_beep_enabled:
             play_sound(ALERT_SOUND, ALERT_VOLUME_ARGS)
 
     def _notify_desktop(self, label: str) -> None:
+        if not self.config.notification_enabled:
+            return
         if not shutil.which("notify-send"):
             return
         try:

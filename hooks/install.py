@@ -27,7 +27,7 @@ MANAGED_HOOKS = {
     "SessionStart": (None, "idle"),
     "UserPromptSubmit": (None, "working"),
     "PreToolUse": ("", "working"),
-    "Notification": ("permission_prompt", "error"),
+    "Notification": ("permission_prompt|idle_prompt|agent_needs_input", "error"),
     "PermissionRequest": (None, "error"),  # qualquer ferramenta pedindo permissão pausa a sessão -> vermelho
     "PostToolUse": ("", "working"),
     "PostToolUseFailure": (None, "error"),

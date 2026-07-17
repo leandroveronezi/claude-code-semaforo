@@ -10,6 +10,20 @@ aparecem lado a lado em um único painel — não é uma janela por sessão.
   via `paplay`/`pw-play` e dispara uma notificação de desktop ao entrar
   nesse estado — só na transição, não fica repetindo)
 
+> **Beep/notificação só quando a sessão não está em primeiro plano.** Se a
+> janela do terminal daquela sessão já é a janela ativa (X11), o alerta é
+> silenciado — não faz sentido tocar som/notificar algo que você já está
+> olhando. Isso é detectado gravando, junto do status, a cadeia de PIDs
+> ancestrais do processo que reportou o evento (`foreground.py:ancestor_pids`)
+> e comparando com o dono da janela em foco no momento do alerta
+> (`foreground.py:active_window_pid`, via `xprop`). Funciona só em X11 —
+> em Wayland, sem `xprop`, ou quando a sessão roda via SSH/remoto (sem
+> relação PID↔janela local), a detecção retorna "não sei" e o comportamento
+> cai para o alerta de sempre (nunca o contrário: incerteza nunca silencia).
+> Com tmux/screen ou várias abas no mesmo terminal, a granularidade é por
+> *janela*, não por aba — todas as sessões daquela janela contam como "em
+> primeiro plano" juntas.
+
 Cada sessão tem seu próprio mascote animado (estilo MS Agent — Clippy,
 Merlin, Rocky, Rover, Links, F1, Genius, Bonzi, Genie ou Peedy) que reflete
 o status atual (parado no idle, "processando" no working, "alerta" no
@@ -104,7 +118,7 @@ qualquer projeto) e chamam `hooks/status_hook.py`:
 | `SessionStart` | — | 🟢 idle |
 | `UserPromptSubmit` | — | 🟡 working |
 | `PreToolUse` | qualquer ferramenta | 🟡 working |
-| `Notification` | `permission_prompt` | 🔴 error |
+| `Notification` | `permission_prompt\|idle_prompt\|agent_needs_input` | 🔴 error |
 | `PermissionRequest` | `AskUserQuestion\|Bash\|ExitPlanMode` | 🔴 error |
 | `PostToolUse` (a ferramenta terminou) | qualquer ferramenta | 🟡 working |
 | `PostToolUseFailure` (a ferramenta falhou de verdade) | — | 🔴 error |
@@ -163,6 +177,20 @@ máquina nova, ou se quiser forçar a atualização sem esperar o app abrir.
 > também entra no matcher — sem isso, o painel não acusava vermelho enquanto
 > esperava você aprovar um plano, já que o nome dessa ferramenta não batia
 > com `AskUserQuestion|Bash`.
+
+> **Por que o matcher do `Notification` inclui `idle_prompt` e
+> `agent_needs_input` além de `permission_prompt`.** O evento `Notification`
+> tem um tipo interno (não exposto no payload JSON, só usado pelo próprio
+> Claude Code pra decidir se o matcher bate) com valores como
+> `permission_prompt`, `idle_prompt`, `auth_success`, `elicitation_dialog`,
+> `agent_needs_input` e `agent_completed`. Só mapear `permission_prompt`
+> deixa passar casos reais de "precisa de mim" que não são um pedido de
+> permissão — por exemplo, uma ferramenta já pré-aprovada (como `WebSearch`
+> na allowlist do projeto) pode disparar uma notificação de atenção sem
+> nunca passar por `PermissionRequest`/`permission_prompt`. `idle_prompt` e
+> `agent_needs_input` cobrem esses casos; `auth_success`/`agent_completed`
+> ficam de fora porque não pedem ação (o segundo já é coberto pelo `Stop`
+> → verde).
 
 Isso cobre apenas sessões do **Claude Code**. Outros agentes/IDEs (Antigravity
 IDE, etc.) não têm essa integração — eles precisariam do próprio mecanismo de

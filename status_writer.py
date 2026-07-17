@@ -7,7 +7,9 @@ Pensado para ser chamado a partir de hooks do Claude Code, do VSCode ou de
 qualquer outro processo que precise reportar seu estado ao semáforo.
 """
 import argparse
+import os
 
+from foreground import ancestor_pids
 from status_store import STATUSES, write_status
 
 
@@ -19,7 +21,9 @@ def main() -> None:
     parser.add_argument("--message", help="Texto exibido no balão de fala do mascote (opcional)")
     args = parser.parse_args()
 
-    path = write_status(args.session_id, args.status, args.label, message=args.message)
+    path = write_status(
+        args.session_id, args.status, args.label, message=args.message, pid_chain=ancestor_pids(os.getpid())
+    )
     print(f"status de '{args.session_id}' -> {args.status} ({path})")
 
 

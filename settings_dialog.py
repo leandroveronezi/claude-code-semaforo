@@ -105,10 +105,19 @@ class SettingsDialog(QDialog):
         self._mascot_sounds_check.toggled.connect(self._on_mascot_sounds_toggled)
         layout.addWidget(self._mascot_sounds_check)
 
+        layout.addLayout(self._build_percent_row(
+            "Tamanho do mascote", config.mascot_scale, self._on_mascot_scale_changed
+        ))
+
         self._alert_beep_check = QCheckBox("Beep de alerta (erro)", self)
         self._alert_beep_check.setChecked(config.alert_beep_enabled)
         self._alert_beep_check.toggled.connect(self._on_alert_beep_toggled)
         layout.addWidget(self._alert_beep_check)
+
+        self._notification_check = QCheckBox("Notificação do sistema (erro)", self)
+        self._notification_check.setChecked(config.notification_enabled)
+        self._notification_check.toggled.connect(self._on_notification_toggled)
+        layout.addWidget(self._notification_check)
 
         layout.addLayout(self._build_timing_row(
             "Revezamento entre sessões (s)", config.mascot_rotation_seconds, self._on_rotation_changed
@@ -187,6 +196,19 @@ class SettingsDialog(QDialog):
         row.addWidget(spin)
         return row
 
+    def _build_percent_row(self, label_text: str, value: int, on_change: Callable[[int], None]) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addWidget(QLabel(label_text, self))
+        row.addStretch(1)
+        spin = QSpinBox(self)
+        spin.setRange(50, 200)
+        spin.setSingleStep(10)
+        spin.setSuffix("%")
+        spin.setValue(value)
+        spin.valueChanged.connect(on_change)
+        row.addWidget(spin)
+        return row
+
     def _step_agent(self, direction: int) -> None:
         self._agent_index = (self._agent_index + direction) % len(self._agents)
         name = self._agents[self._agent_index]
@@ -207,8 +229,16 @@ class SettingsDialog(QDialog):
         self._config.mascot_sounds_enabled = checked
         self._emit_change()
 
+    def _on_mascot_scale_changed(self, value: int) -> None:
+        self._config.mascot_scale = value
+        self._emit_change()
+
     def _on_alert_beep_toggled(self, checked: bool) -> None:
         self._config.alert_beep_enabled = checked
+        self._emit_change()
+
+    def _on_notification_toggled(self, checked: bool) -> None:
+        self._config.notification_enabled = checked
         self._emit_change()
 
     def _on_rotation_changed(self, value: float) -> None:

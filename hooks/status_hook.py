@@ -8,12 +8,14 @@ remove) o status correspondente.
 Uso: status_hook.py <idle|working|error|remove>
 """
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from foreground import ancestor_pids  # noqa: E402
 from status_store import remove_status, write_status  # noqa: E402
 
 # eventos em que vale a pena montar uma mensagem pro balão de fala do
@@ -143,7 +145,8 @@ def main() -> None:
             else:
                 message = _last_assistant_text(payload.get("transcript_path"), delay=STOP_READ_DELAY_SECONDS)
         activity = _activity_for(payload)
-        write_status(session_id, target, label=label, message=message, activity=activity)
+        pid_chain = ancestor_pids(os.getpid())
+        write_status(session_id, target, label=label, message=message, activity=activity, pid_chain=pid_chain)
 
 
 if __name__ == "__main__":

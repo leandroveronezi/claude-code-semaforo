@@ -2,7 +2,7 @@
 compacto por sessão, lado a lado (em vez de abrir uma janela separada para
 cada uma). O mascote é único e vive à parte, em mascot_overlay.py."""
 from PyQt6.QtCore import QEasingCurve, QEvent, QPoint, QSize, Qt, QTimer, QVariantAnimation, pyqtSignal
-from PyQt6.QtGui import QColor, QCursor, QFont, QFontMetrics, QLinearGradient, QPainter
+from PyQt6.QtGui import QColor, QCursor, QFont, QFontMetrics, QGuiApplication, QLinearGradient, QPainter
 from PyQt6.QtWidgets import QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from light_column import COLUMN_WIDTH, CONTENT_HEIGHT, LIGHT_COLORS, LightColumn
@@ -181,10 +181,13 @@ class SemaphorePanel(QWidget):
         shadow.setColor(QColor(0, 0, 0, 170))
         self.setGraphicsEffect(shadow)
 
+        self._anchor_right = False
+        self._resize_start_right = 0
+
         self._resize_animation = QVariantAnimation(self)
         self._resize_animation.setDuration(RESIZE_ANIMATION_MS)
         self._resize_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self._resize_animation.valueChanged.connect(self.setFixedSize)
+        self._resize_animation.valueChanged.connect(self._apply_resize)
 
         self._resize_to_content()
 
@@ -225,9 +228,30 @@ class SemaphorePanel(QWidget):
             return
 
         self._resize_animation.stop()
+        self._anchor_right = self._is_near_right_edge()
+        self._resize_start_right = self.x() + self.width()
         self._resize_animation.setStartValue(self.size())
         self._resize_animation.setEndValue(target)
         self._resize_animation.start()
+
+    def _apply_resize(self, size: QSize) -> None:
+        # por padrão o Qt cresce/encolhe mantendo o canto esquerdo fixo
+        # (setFixedSize não mexe em x/y). Se o painel estiver ancorado perto
+        # da borda direita da tela, isso faz ele "fugir" do canto ao crescer
+        # (ou descolar dele ao encolher) — por isso, nesse caso, recalculamos
+        # x pra manter a borda direita parada e crescer/encolher pra esquerda.
+        self.setFixedSize(size)
+        if self._anchor_right:
+            self.move(self._resize_start_right - size.width(), self.y())
+
+    def _is_near_right_edge(self) -> bool:
+        screen = QGuiApplication.screenAt(self.frameGeometry().center()) or QGuiApplication.primaryScreen()
+        if screen is None:
+            return False
+        bounds = screen.availableGeometry()
+        dist_left = self.x() - bounds.left()
+        dist_right = bounds.right() - (self.x() + self.width())
+        return dist_right < dist_left
 
     def _panel_rect(self):
         return self.rect().adjusted(SHADOW_MARGIN, SHADOW_MARGIN, -SHADOW_MARGIN, -SHADOW_MARGIN)

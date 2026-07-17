@@ -23,6 +23,7 @@ def write_status(
     directory: Path | None = None,
     message: str | None = None,
     activity: str | None = None,
+    pid_chain: list[int] | None = None,
 ) -> Path:
     if status not in STATUSES:
         raise ValueError(f"status inválido: {status!r} (use um de {STATUSES})")
@@ -35,6 +36,7 @@ def write_status(
         "label": label or session_id,
         "message": message,
         "activity": activity,
+        "pid_chain": pid_chain or [],
         "updated_at": time.time(),
     }
 
