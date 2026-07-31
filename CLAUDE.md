@@ -1,47 +1,49 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guia de orientação para trabalhar com código neste repositório.
 
-## What this is
+## O Projeto
 
-"Semáforo de Status" — a floating PyQt6 desktop panel (Linux) that shows a mini traffic light per monitored editor/agent session (🔴🟡🟢), plus a single shared animated mascot (MS Agent style — Clippy, Merlin, Rover, etc.) that reflects the aggregate mood across all sessions. It ships with ready-made Claude Code hook integration so every Claude Code session anywhere becomes a column automatically. All user-facing docs/comments are in pt-BR; follow that convention in this repo.
+**Semáforo de Status** — painel flutuante PyQt6 (Linux) que mostra um mini semáforo (🔴🟡🟢) por sessão monitorada, mais um mascote animado único que reflete o estado agregado de todas as sessões. Integração pronta com Claude Code via hooks, então cada sessão do Claude vira uma coluna automaticamente.
 
-## Commands
+**Convenção:** toda documentação e comentários visíveis ao usuário estão em pt-BR; siga essa convenção também nos comentários de código.
+
+## Comandos
 
 ```bash
-pip install -r requirements.txt        # PyQt6==6.6.1 / PyQt6-Qt6==6.6.3 pinned if wheels fail to build
-python3 main.py                        # run the app (tray icon appears immediately)
-python3 simulate.py                    # 3 fake sessions cycling status, for testing without a real agent
-python3 status_writer.py <session_id> <idle|working|error> --label "..." --message "..."   # report a session manually
-python3 autostart.py {install|remove|status}   # freedesktop.org autostart entry
-python3 hooks/install.py               # (re)install Claude Code hooks into ~/.claude/settings.json (idempotent)
+pip install -r requirements.txt        # PyQt6==6.6.1 / PyQt6-Qt6==6.6.3 pinned se wheels falharem
+python3 main.py                        # rodar app (ícone de bandeja aparece imediatamente)
+python3 simulate.py                    # 3 sessões fictícias alternando status, para teste
+python3 status_writer.py <id> <idle|working|error> --label "..." --message "..."   # reportar sessão manualmente
+python3 autostart.py {install|remove|status}   # entrada freedesktop.org autostart
+python3 hooks/install.py               # (re)instalar hooks do Claude Code em ~/.claude/settings.json (idempotente)
 ```
 
-There is no test suite, linter, or build step configured in this repo.
+Não há test suite, linter ou build step configurado neste projeto.
 
-`SEMAFORO_STATUS_DIR` env var overrides the sessions directory (default `sessions/` next to `status_store.py`) for both `main.py` and `status_writer.py` — needed if you run multiple instances sharing state.
+`SEMAFORO_STATUS_DIR` — variável de ambiente que override o diretório de sessões (padrão `sessions/` ao lado de `status_store.py`). Necessária se rodar múltiplas instâncias compartilhando estado.
 
-## Architecture
+## Arquitetura
 
-**Sessions are files, not connections.** The entire integration surface is `sessions/<session_id>.json`, written atomically (`status_store.write_status`, via temp-file + `os.replace`). `SessionManager` (`session_manager.py`) watches that directory with `QFileSystemWatcher` (plus a 2s fallback poll, since atomic renames sometimes drop the underlying watch) and derives everything else from what it reads — status, label, message, activity, pid_chain, updated_at. Any process, in any language, can drive the panel just by writing that JSON shape; `status_writer.py` is the CLI convenience wrapper around it.
+**Sessões são arquivos, não conexões.** A superfície de integração inteira é `sessions/<session_id>.json`, escrito atomicamente via `status_store.write_status()` (temp-file + `os.replace`). `SessionManager` (`session_manager.py`) monitora esse diretório com `QFileSystemWatcher` (+ poll de 2s como fallback, pois atomic renames às vezes dropa a watch) e deriva tudo do que lê: status, label, message, activity, pid_chain, updated_at. Qualquer processo, em qualquer linguagem, pode dirigir o painel apenas escrevendo esse shape JSON; `status_writer.py` é a wrapper CLI de conveniência.
 
-**Claude Code integration is a hook script, not a plugin.** `hooks/status_hook.py` is invoked by Claude Code itself (configured in the user-level `~/.claude/settings.json`, installed/merged by `hooks/install.py`) on lifecycle events (SessionStart, UserPromptSubmit, PreToolUse/PostToolUse, Notification, PermissionRequest, Stop, SessionEnd, etc. — see `MANAGED_HOOKS` in `hooks/install.py`). It maps each event to a status (idle/working/error/remove), best-effort extracts a preview message for the mascot's speech bubble (from the transcript on `Stop`, or from the pending permission/notification payload), and calls `write_status`/`remove_status`. Because `~/.claude/settings.json` lives outside this repo, `main.py` checks `is_up_to_date()` on every launch and silently reinstalls if the hook paths are stale (e.g. project folder moved/renamed) — this is why hook commands end in `|| true` and never block Claude Code even if this app is broken or absent.
+**Integração Claude Code é um hook script, não um plugin.** `hooks/status_hook.py` é invocado pelo Claude Code (configurado em `~/.claude/settings.json` ao nível de usuário, instalado/mesclado por `hooks/install.py`) em eventos do ciclo de vida (SessionStart, UserPromptSubmit, PreToolUse/PostToolUse, Notification, PermissionRequest, Stop, SessionEnd, etc. — veja `MANAGED_HOOKS` em `hooks/install.py`). Mapeia cada evento a um status (idle/working/error/remove), extrai melhor-esforço uma preview para o balão do mascote (da transcript em `Stop`, ou do payload de permissão/notificação pendente), e chama `write_status`/`remove_status`. Como `~/.claude/settings.json` fica fora deste repo, `main.py` confere `is_up_to_date()` a cada início e reinstala silenciosamente se os caminhos do hook ficarem velhos (ex.: pasta do projeto movida/renomeada) — é por isso que comandos de hook terminam em `|| true` e nunca bloqueiam o Claude Code mesmo se este app quebrar.
 
-**One panel, one mascot — not one window per session.** `SemaphorePanel` (`semaphore_panel.py`) is a single floating widget that lays out a `LightColumn` (`light_column.py`) per session side by side. `MascotOverlay` (`mascot_overlay.py`) is a *separate* always-on-top window holding one shared `MascotWidget` (`mascot.py`) + `SpeechBubble` (`speech_bubble.py`); it reflects the *aggregate* mood of all sessions (error > working > idle priority, same as the tray icon) and rotates between multiple same-tier sessions on a timer, pausing on hover. Idle transitions are one-shot queued notifications (a session finishing doesn't loop forever) that get interleaved into an ongoing error/working rotation rather than stalled behind it — see `_combined_entries` / `IDLE_DONE_MARKER` in `mascot_overlay.py` for the exact mechanics before touching rotation logic.
+**Um painel, um mascote — não uma janela por sessão.** `SemaphorePanel` (`semaphore_panel.py`) é um widget flutuante único que layout uma `LightColumn` (`light_column.py`) por sessão lado a lado. `MascotOverlay` (`mascot_overlay.py`) é uma janela *separada* always-on-top que segura um `MascotWidget` (`mascot.py`) + `SpeechBubble` (`speech_bubble.py`) compartilhados; reflete o estado *agregado* de todas as sessões (prioridade error > working > idle, igual ao ícone da bandeja) e reveza entre múltiplas sessões do mesmo tier em timer, pausando ao passar o mouse. Transições idle são notificações enfileiradas one-shot (sessão terminando não fica loopando forever) que se intercalam em uma rotação error/working em andamento em vez de ficarem travadas atrás — veja `_combined_entries` / `IDLE_DONE_MARKER` em `mascot_overlay.py` para a mecânica exata antes de tocar lógica de rotação.
 
-**Mascot animation engine is a faithful port of clippy.js.** `mascot.py`'s frame engine (`_step`, `_get_next_frame_index`, branching, `exitBranch`, `useExitBranching`) is a direct port of `clippy.js/src/animator.js`, not a simplification — it preserves probabilistic animation branching and multi-image composited frames. `assets/mascot/<Name>/agent.json` is regenerated from `clippy.js/agents/<Name>/agent.js` via `scripts/import_mascot_agents.py` (curates `status_animations` per-character since clippy.js has no notion of idle/working/error); `.wav` sounds are extracted on demand via `scripts/import_mascot_sounds.py` (needs `ffmpeg`). Don't hand-edit `agent.json` — fix the importer and rerun it. Mascot assets are original Microsoft sprites redistributed by the clippy.js community with no clear license — treat as personal/local use only, not for redistribution.
+**Engine de animação do mascote é um port fiel de clippy.js.** O frame engine de `mascot.py` (`_step`, `_get_next_frame_index`, branching, `exitBranch`, `useExitBranching`) é um port direto de `clippy.js/src/animator.js`, não uma simplificação — preserva branching de animação probabilístico e frames compostos multi-imagem. `assets/mascot/<Name>/agent.json` é regenerado de `clippy.js/agents/<Name>/agent.js` via `scripts/import_mascot_agents.py` (curates `status_animations` por-character já que clippy.js não tem noção de idle/working/error); sons `.wav` são extraídos on-demand via `scripts/import_mascot_sounds.py` (precisa de `ffmpeg`). Não edite `agent.json` manualmente — corrija o importer e rerun. Assets do mascote são sprites originais Microsoft redistribuídos pela comunidade clippy.js sem licença clara — trate como uso pessoal/local apenas, não para redistribuição.
 
-**Foreground detection is X11-only and fails open to "alert".** `foreground.py`'s `active_window_pid()` shells out to `xprop`; on Wayland or without `xprop` it returns `None`, and every caller must treat that as "unknown" (i.e. still alert) rather than assuming foreground. This is used to suppress the error beep/notification when the user is already looking at the session in question — matched via `ancestor_pids()` (walks `/proc/<pid>/stat`) recorded in each session's `pid_chain`.
+**Detecção de foreground é X11-only e falha aberto para "alert".** `foreground.py`'s `active_window_pid()` shell-outa para `xprop`; em Wayland ou sem `xprop` retorna `None`, e todo caller deve tratar como "unknown" (i.e. ainda alert) em vez de assumir foreground. Usado para suprimir beep/notificação de erro quando o usuário já está olhando para a sessão em questão — matched via `ancestor_pids()` (caminha `/proc/<pid>/stat`) registrado em `pid_chain` de cada sessão.
 
-**Stale session handling** lives in `SessionManager._check_stale`: working/error sessions untouched for 10 minutes revert to idle (likely a killed process, not a real alert); any session untouched for 4 hours is removed entirely. Idle sessions are never auto-removed for age alone.
+**Limpeza de sessão stale** vive em `SessionManager._check_stale`: sessões working/error intocadas por 10+ minutos revert para idle (provável processo morto, não alerta real); qualquer sessão intocada por 4+ horas é removida inteiramente. Sessões idle nunca são auto-removidas por idade apenas.
 
-**Config** (`config.py`) is a single dataclass persisted as YAML at `~/.config/semaforo-status/config.yaml`, editable via the tray menu's `SettingsDialog` (`settings_dialog.py`). `Config.load()` silently drops unknown keys, so old config files never crash a newer version of the app.
+**Config** (`config.py`) é um dataclass único persistido como YAML em `~/.config/semaforo-status/config.yaml`, editável via menu de bandeja `SettingsDialog` (`settings_dialog.py`). `Config.load()` silenciosamente dropa chaves desconhecidas, então arquivos config antigos nunca crasham uma versão mais nova do app.
 
-## Key files
+## Arquivos-Chave
 
-- `status_store.py` — the on-disk session protocol (read/write/remove), shared by the app and any external reporter
-- `session_manager.py` — session discovery, tray icon, stale-session sweep, screen-change reanchoring
-- `mascot_overlay.py` — mascot window: layout, rotation/queue engine, multi-monitor anchoring
-- `mascot.py` — clippy.js-derived animation/frame engine
-- `hooks/status_hook.py` + `hooks/install.py` — the entire Claude Code integration
-- `foreground.py` — X11 foreground-window detection for alert suppression
+- `status_store.py` — protocolo de sessão em disco (ler/escrever/remover), compartilhado pelo app e qualquer reporter externo
+- `session_manager.py` — descoberta de sessão, ícone de bandeja, sweep de sessão stale, reancoragem em mudança de tela
+- `mascot_overlay.py` — janela do mascote: layout, engine de rotação/fila, ancoragem multi-monitor
+- `mascot.py` — engine de animação/frame derivado de clippy.js
+- `hooks/status_hook.py` + `hooks/install.py` — toda a integração Claude Code
+- `foreground.py` — detecção de janela foreground X11 para supressão de alerta
