@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from foreground import ancestor_pids  # noqa: E402
-from status_store import remove_status, write_status  # noqa: E402
+from status_store import remove_status, update_usage, write_status  # noqa: E402
 
 # eventos em que vale a pena montar uma mensagem pro balão de fala do
 # mascote; nos demais (ex.: cada PreToolUse) isso rodaria a cada chamada de
@@ -79,6 +79,49 @@ def _last_assistant_text(transcript_path: str | None, delay: float = 0.0) -> str
         for block in content:
             if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
                 return block["text"]
+    return None
+
+
+def _cumulative_usage(transcript_path: str | None) -> dict | None:
+    """Tamanho do contexto atual da conversa, a partir da última resposta do
+    assistente no transcript (cada entrada assistant já vem com "usage" no
+    formato da API da Anthropic). É a fonte confiável: statusLine forneceria
+    o mesmo dado, mas não é chamado pela extensão VSCode (só pelo CLI em
+    terminal) — hooks funcionam nos dois, então o transcript é o caminho que
+    sempre existe.
+
+    Importante: usa só a ÚLTIMA entrada, não soma todas. Cada turno já
+    reporta em cache_read_input_tokens praticamente todo o contexto anterior
+    (efeito do prompt caching), então somar turno a turno infla o valor
+    várias vezes e nunca cai após um /compact (o transcript só cresce, o
+    compact não apaga linhas antigas)."""
+    if not transcript_path:
+        return None
+    try:
+        lines = Path(transcript_path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+
+    for line in reversed(lines):
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if entry.get("type") != "assistant":
+            continue
+        usage = entry.get("message", {}).get("usage")
+        if not usage:
+            continue
+        input_tokens = usage.get("input_tokens") or 0
+        output_tokens = usage.get("output_tokens") or 0
+        cache_creation = usage.get("cache_creation_input_tokens") or 0
+        cache_read = usage.get("cache_read_input_tokens") or 0
+        return {
+            "total_tokens": input_tokens + output_tokens + cache_creation + cache_read,
+            "total_input_tokens": input_tokens,
+            "total_output_tokens": output_tokens,
+        }
+
     return None
 
 
@@ -146,6 +189,12 @@ def main() -> None:
                 message = _last_assistant_text(payload.get("transcript_path"), delay=STOP_READ_DELAY_SECONDS)
         activity = _activity_for(payload)
         pid_chain = ancestor_pids(os.getpid())
+
+        if event == "Stop":
+            usage = _cumulative_usage(payload.get("transcript_path"))
+            if usage:
+                update_usage(session_id, usage, label=label)
+
         write_status(session_id, target, label=label, message=message, activity=activity, pid_chain=pid_chain)
 
 

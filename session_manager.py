@@ -41,9 +41,11 @@ class SessionManager:
         self._messages: dict[str, str | None] = {}
         self._activities: dict[str, str | None] = {}
         self._pid_chains: dict[str, list[int]] = {}
+        self._usages: dict[str, dict | None] = {}
         self._status_since: dict[str, float] = {}  # quando o status atual começou (ordem de chegada p/ mascote)
         self._manually_hidden = False  # usuário escondeu o painel enquanto havia sessões
         self.config = Config.load()
+        self.panel.set_usage_config(self.config.usage_bar_enabled, self.config.usage_thresholds)
         self.mascot_overlay = MascotOverlay(self.config)
         self._settings_dialog: SettingsDialog | None = None
         self.settings = QSettings("SemaforoStatus", "Posicoes")
@@ -155,6 +157,7 @@ class SessionManager:
             self._messages[session_id] = message
             self._activities[session_id] = activity
             self._pid_chains[session_id] = data.get("pid_chain") or []
+            self._usages[session_id] = data.get("usage")
             if status != previous_status:
                 self._status_since[session_id] = time.time()
                 # "chegou" numa sessão ociosa vindo de outro estado -> notificação
@@ -162,7 +165,7 @@ class SessionManager:
                 # (previous_status is None) não conta como chegada.
                 if status == "idle" and previous_status is not None:
                     self.mascot_overlay.enqueue_idle(label, message)
-            self.panel.upsert_session(session_id, label, status, message)
+            self.panel.upsert_session(session_id, label, status, message, data.get("usage"))
             if status == "error" and previous_status != "error":
                 if not self._session_in_foreground(session_id):
                     self._play_alert_sound()
@@ -176,6 +179,7 @@ class SessionManager:
                 self._messages.pop(session_id, None)
                 self._activities.pop(session_id, None)
                 self._pid_chains.pop(session_id, None)
+                self._usages.pop(session_id, None)
                 self._status_since.pop(session_id, None)
                 self.panel.remove_session(session_id)
 
@@ -294,6 +298,7 @@ class SessionManager:
     def _on_config_changed(self, config: Config) -> None:
         config.save()
         self.mascot_overlay.update_config(config)
+        self.panel.set_usage_config(config.usage_bar_enabled, config.usage_thresholds)
         self._sync_mascot_visibility()
 
     def _toggle_panel(self) -> None:

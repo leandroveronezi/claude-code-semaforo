@@ -15,11 +15,26 @@ SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 HOOK_SCRIPT = str((Path(__file__).resolve().parent / "status_hook.py"))
 MARKER = "status_hook.py"  # usado para identificar (e substituir) nossos hooks numa reinstalação
 
+STATUSLINE_SCRIPT = str((Path(__file__).resolve().parent / "statusline_hook.py"))
+STATUSLINE_MARKER = "statusline_hook.py"
+
+
 def _cmd(status: str) -> dict:
     return {
         "type": "command",
         "command": f'python3 "{HOOK_SCRIPT}" {status} 2>/dev/null || true',
     }
+
+
+def _statusline_cmd() -> dict:
+    return {
+        "type": "command",
+        "command": f'python3 "{STATUSLINE_SCRIPT}" 2>/dev/null || true',
+    }
+
+
+def _is_statusline_ours(entry: dict | None) -> bool:
+    return bool(entry) and STATUSLINE_MARKER in entry.get("command", "")
 
 
 # evento -> (matcher ou None, status a reportar)
@@ -63,11 +78,24 @@ def install(quiet: bool = False) -> None:
         kept.append(_group(matcher, status))
         hooks[event] = kept
 
+    existing_statusline = settings.get("statusLine")
+    statusline_installed = existing_statusline is None or _is_statusline_ours(existing_statusline)
+    if statusline_installed:
+        settings["statusLine"] = _statusline_cmd()
+
     SETTINGS_PATH.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     if not quiet:
         print(f"Hooks instalados em {SETTINGS_PATH}")
         for event in MANAGED_HOOKS:
             print(f"  - {event}")
+        if statusline_installed:
+            print("  - statusLine (uso de tokens por sessão)")
+        else:
+            print(
+                "  statusLine customizado já configurado — não sobrescrito;"
+                " uso de tokens por sessão ficará indisponível até remover"
+                " o statusLine atual do settings.json."
+            )
 
 
 def is_up_to_date() -> bool:
@@ -82,10 +110,18 @@ def is_up_to_date() -> bool:
         return False
 
     hooks = settings.get("hooks", {})
-    return all(
+    hooks_ok = all(
         _group(matcher, status) in hooks.get(event, [])
         for event, (matcher, status) in MANAGED_HOOKS.items()
     )
+
+    existing_statusline = settings.get("statusLine")
+    if existing_statusline is not None and not _is_statusline_ours(existing_statusline):
+        statusline_ok = True  # statusLine customizado do usuário — não é nosso, não mexe
+    else:
+        statusline_ok = existing_statusline == _statusline_cmd()
+
+    return hooks_ok and statusline_ok
 
 
 def main() -> None:

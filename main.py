@@ -1,5 +1,6 @@
 """Semáforo de Status: um semáforo flutuante por editor/aba monitorado."""
 import shutil
+import signal
 import subprocess
 import sys
 
@@ -36,6 +37,13 @@ def _ensure_hooks_installed() -> None:
 
 
 def main() -> int:
+    # sem isso, um Ctrl+C que chega no meio de um paintEvent (callback do
+    # Qt em C++) faz o Python levantar KeyboardInterrupt ali dentro, o que
+    # não é seguro de propagar através da pilha C++ — derruba o processo
+    # com abort/core dump em vez de só sair. SIG_DFL faz o SO encerrar o
+    # processo diretamente, sem passar pelo Python nesse ponto.
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+
     _ensure_hooks_installed()
 
     app = QApplication(sys.argv)

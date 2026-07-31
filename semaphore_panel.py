@@ -110,6 +110,7 @@ class _SessionColumn(QWidget):
         self.session_id = session_id
         self._label = label
         self._message: str | None = None
+        self._usage: dict | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -141,16 +142,42 @@ class _SessionColumn(QWidget):
             _AlwaysOnTopTooltip.hide_tooltip()
         return super().event(event)
 
-    def update_session(self, label: str, status: str, message: str | None) -> None:
+    def update_session(
+        self, label: str, status: str, message: str | None, usage: dict | None = None
+    ) -> None:
         self._label = label
         self._message = message
+        self._usage = usage
         self.title.set_text(label)
         self.title.set_status_color(status)
         self.lights.set_status(status)
+        self.lights.set_usage(usage.get("total_tokens") if usage else None)
         self.setToolTip(self._tooltip_text())
 
     def _tooltip_text(self) -> str:
-        return f"{self._label}\n\n{self._message}" if self._message else self._label
+        lines = [self._label]
+        if self._message:
+            lines.append(f"\n{self._message}")
+        usage_line = self._usage_text()
+        if usage_line:
+            lines.append(f"\n{usage_line}")
+        return "\n".join(lines)
+
+    def _usage_text(self) -> str | None:
+        usage = self._usage
+        if not usage:
+            return None
+        parts = []
+        total_tokens = usage.get("total_tokens")
+        if total_tokens is not None:
+            parts.append(f"Tokens acumulados: {total_tokens:,}")
+        used_pct = usage.get("used_percentage")
+        if used_pct is not None:
+            parts.append(f"Contexto atual: {round(used_pct)}%")
+        cost = usage.get("total_cost_usd")
+        if cost is not None:
+            parts.append(f"Custo: ${cost:.4f}")
+        return " · ".join(parts) if parts else None
 
 
 class SemaphorePanel(QWidget):
@@ -168,6 +195,8 @@ class SemaphorePanel(QWidget):
 
         self._columns: dict[str, _SessionColumn] = {}
         self._drag_offset: QPoint | None = None
+        self._usage_enabled = True
+        self._usage_thresholds: list = []
 
         self._layout = QHBoxLayout(self)
         self._layout.setContentsMargins(
@@ -192,13 +221,30 @@ class SemaphorePanel(QWidget):
         self._resize_to_content()
 
     # -- gerenciamento de sessões -------------------------------------------------
-    def upsert_session(self, session_id: str, label: str, status: str, message: str | None = None) -> None:
+    def set_usage_config(self, enabled: bool, thresholds: list) -> None:
+        self._usage_enabled = enabled
+        self._usage_thresholds = thresholds
+        for column in self._columns.values():
+            column.lights.set_show_usage(enabled)
+            column.lights.set_thresholds(thresholds)
+        self._resize_to_content()
+
+    def upsert_session(
+        self,
+        session_id: str,
+        label: str,
+        status: str,
+        message: str | None = None,
+        usage: dict | None = None,
+    ) -> None:
         column = self._columns.get(session_id)
         if column is None:
             column = _SessionColumn(session_id, label, status, parent=self)
+            column.lights.set_show_usage(self._usage_enabled)
+            column.lights.set_thresholds(self._usage_thresholds)
             self._layout.addWidget(column)
             self._columns[session_id] = column
-        column.update_session(label, status, message)
+        column.update_session(label, status, message, usage)
         self._resize_to_content()
 
     def remove_session(self, session_id: str) -> None:

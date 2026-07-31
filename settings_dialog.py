@@ -2,8 +2,10 @@
 from typing import Callable
 
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QColorDialog,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -11,6 +13,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QPushButton,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -70,7 +73,82 @@ QDialogButtonBox QPushButton {
 QDialogButtonBox QPushButton:hover {
     background-color: #35353d;
 }
+QTabWidget::pane {
+    border: 1px solid #2b2b31;
+    border-radius: 8px;
+    top: -1px;
+}
+QTabBar::tab {
+    background-color: #201f24;
+    color: #b0b0b8;
+    padding: 6px 14px;
+    border: 1px solid #2b2b31;
+    border-bottom: none;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+}
+QTabBar::tab:selected {
+    background-color: #2b2b31;
+    color: #f2f2f5;
+}
+QTabBar::tab:hover {
+    background-color: #2b2b31;
+}
 """
+
+
+class _ThresholdRow(QWidget):
+    """Uma linha do editor de limiares: quantidade de tokens + cor + remover."""
+
+    def __init__(
+        self,
+        tokens: int,
+        color: str,
+        on_change: Callable[[], None],
+        on_remove: Callable[["_ThresholdRow"], None],
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._on_change = on_change
+        self._on_remove = on_remove
+        self._color = color
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+
+        self._spin = QSpinBox(self)
+        self._spin.setRange(1_000, 2_000_000)
+        self._spin.setSingleStep(10_000)
+        self._spin.setSuffix(" tokens")
+        self._spin.setValue(tokens)
+        self._spin.valueChanged.connect(lambda _v: self._on_change())
+        row.addWidget(self._spin, 1)
+
+        self._color_button = QPushButton(self)
+        self._color_button.setFixedSize(30, 22)
+        self._apply_button_color()
+        self._color_button.clicked.connect(self._pick_color)
+        row.addWidget(self._color_button)
+
+        remove_button = QPushButton("✕", self)
+        remove_button.setFixedSize(22, 22)
+        remove_button.clicked.connect(lambda: self._on_remove(self))
+        row.addWidget(remove_button)
+
+    def _apply_button_color(self) -> None:
+        self._color_button.setStyleSheet(
+            f"background-color: {self._color}; border: 1px solid #3a3a42; border-radius: 4px;"
+        )
+
+    def _pick_color(self) -> None:
+        chosen = QColorDialog.getColor(QColor(self._color), self, "Escolha a cor")
+        if chosen.isValid():
+            self._color = chosen.name()
+            self._apply_button_color()
+            self._on_change()
+
+    def value(self) -> list:
+        return [self._spin.value(), self._color]
 
 
 class SettingsDialog(QDialog):
@@ -90,8 +168,31 @@ class SettingsDialog(QDialog):
         self._agent_index = self._agents.index(config.mascot) if config.mascot in self._agents else 0
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(14)
+        layout.setSpacing(12)
         layout.setContentsMargins(20, 20, 20, 16)
+
+        tabs = QTabWidget(self)
+        tabs.addTab(self._build_mascot_tab(), "Mascote")
+        tabs.addTab(self._build_alerts_tab(), "Alertas")
+        tabs.addTab(self._build_usage_tab(), "Uso de tokens")
+        layout.addWidget(tabs)
+
+        hint = QLabel("As mudanças aplicam na hora, sem precisar reiniciar.", self)
+        hint.setObjectName("hint")
+        layout.addWidget(hint)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
+        buttons.rejected.connect(self.close)
+        buttons.button(QDialogButtonBox.StandardButton.Close).clicked.connect(self.close)
+        layout.addWidget(buttons)
+
+    # -- aba: mascote -------------------------------------------------
+    def _build_mascot_tab(self) -> QWidget:
+        config = self._config
+        tab = QWidget(self)
+        layout = QVBoxLayout(tab)
+        layout.setSpacing(12)
+        layout.setContentsMargins(4, 12, 4, 4)
 
         layout.addLayout(self._build_carousel())
 
@@ -108,6 +209,16 @@ class SettingsDialog(QDialog):
         layout.addLayout(self._build_percent_row(
             "Tamanho do mascote", config.mascot_scale, self._on_mascot_scale_changed
         ))
+        layout.addStretch(1)
+        return tab
+
+    # -- aba: alertas -------------------------------------------------
+    def _build_alerts_tab(self) -> QWidget:
+        config = self._config
+        tab = QWidget(self)
+        layout = QVBoxLayout(tab)
+        layout.setSpacing(12)
+        layout.setContentsMargins(4, 12, 4, 4)
 
         self._alert_beep_check = QCheckBox("Beep de alerta (erro)", self)
         self._alert_beep_check.setChecked(config.alert_beep_enabled)
@@ -128,15 +239,17 @@ class SettingsDialog(QDialog):
         layout.addLayout(self._build_char_limit_row(
             "Caracteres no balão antes de truncar", config.mascot_message_limit, self._on_message_limit_changed
         ))
+        layout.addStretch(1)
+        return tab
 
-        hint = QLabel("As mudanças aplicam na hora, sem precisar reiniciar.", self)
-        hint.setObjectName("hint")
-        layout.addWidget(hint)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
-        buttons.rejected.connect(self.close)
-        buttons.button(QDialogButtonBox.StandardButton.Close).clicked.connect(self.close)
-        layout.addWidget(buttons)
+    # -- aba: uso de tokens -------------------------------------------------
+    def _build_usage_tab(self) -> QWidget:
+        tab = QWidget(self)
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(4, 12, 4, 4)
+        layout.addLayout(self._build_usage_section())
+        layout.addStretch(1)
+        return tab
 
     # -- carrossel de personagem -------------------------------------------------
     def _build_carousel(self) -> QHBoxLayout:
@@ -208,6 +321,56 @@ class SettingsDialog(QDialog):
         spin.valueChanged.connect(on_change)
         row.addWidget(spin)
         return row
+
+    def _build_usage_section(self) -> QVBoxLayout:
+        section = QVBoxLayout()
+        section.setSpacing(6)
+
+        self._usage_bar_check = QCheckBox("Mostrar barra de uso de tokens", self)
+        self._usage_bar_check.setChecked(self._config.usage_bar_enabled)
+        self._usage_bar_check.toggled.connect(self._on_usage_bar_toggled)
+        section.addWidget(self._usage_bar_check)
+
+        hint = QLabel("Limiares de cor (tokens acumulados na sessão):", self)
+        hint.setObjectName("hint")
+        section.addWidget(hint)
+
+        self._threshold_rows: list[_ThresholdRow] = []
+        self._threshold_list_layout = QVBoxLayout()
+        self._threshold_list_layout.setSpacing(4)
+        section.addLayout(self._threshold_list_layout)
+
+        for tokens, color in self._config.usage_thresholds:
+            self._add_threshold_row(tokens, color, emit=False)
+
+        add_button = QPushButton("+ Adicionar limiar", self)
+        add_button.clicked.connect(lambda: self._add_threshold_row(100_000, "#32d74b"))
+        section.addWidget(add_button)
+
+        return section
+
+    def _add_threshold_row(self, tokens: int, color: str, emit: bool = True) -> None:
+        row = _ThresholdRow(tokens, color, on_change=self._on_thresholds_changed, on_remove=self._remove_threshold_row, parent=self)
+        self._threshold_rows.append(row)
+        self._threshold_list_layout.addWidget(row)
+        if emit:
+            self._on_thresholds_changed()
+
+    def _remove_threshold_row(self, row: "_ThresholdRow") -> None:
+        if len(self._threshold_rows) <= 1:
+            return  # mantém pelo menos um limiar — sem isso a barra perde a referência de "cheio"
+        self._threshold_rows.remove(row)
+        self._threshold_list_layout.removeWidget(row)
+        row.deleteLater()
+        self._on_thresholds_changed()
+
+    def _on_thresholds_changed(self) -> None:
+        self._config.usage_thresholds = [row.value() for row in self._threshold_rows]
+        self._emit_change()
+
+    def _on_usage_bar_toggled(self, checked: bool) -> None:
+        self._config.usage_bar_enabled = checked
+        self._emit_change()
 
     def _step_agent(self, direction: int) -> None:
         self._agent_index = (self._agent_index + direction) % len(self._agents)
