@@ -190,10 +190,14 @@ def main() -> None:
         activity = _activity_for(payload)
         pid_chain = ancestor_pids(os.getpid())
 
-        if event == "Stop":
-            usage = _cumulative_usage(payload.get("transcript_path"))
-            if usage:
-                update_usage(session_id, usage, label=label)
+        # calcula a cada evento (não só no Stop): PreToolUse/PostToolUse já
+        # disparam a cada ferramenta chamada, e cada entrada assistant no
+        # transcript (inclusive as que só chamam ferramenta, sem texto) já
+        # vem com "usage" — então dá pra atualizar o contador progressivamente
+        # enquanto o Claude ainda está respondendo, em vez de esperar o Stop.
+        usage = _cumulative_usage(payload.get("transcript_path"))
+        if usage:
+            update_usage(session_id, usage, label=label)
 
         write_status(session_id, target, label=label, message=message, activity=activity, pid_chain=pid_chain)
 
