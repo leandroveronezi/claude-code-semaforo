@@ -1,8 +1,9 @@
 """Janela de configurações (personagem, som do mascote, mascote, beep de alerta)."""
+from pathlib import Path
 from typing import Callable
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import QLocale, QSize, Qt
+from PyQt6.QtGui import QColor, QIcon
 from PyQt6.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -11,6 +12,7 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSpinBox,
     QTabWidget,
@@ -22,6 +24,30 @@ from config import Config
 from mascot import MascotWidget, list_agents
 
 PREVIEW_SIZE = (144, 108)
+
+_ICONS_DIR = Path(__file__).resolve().parent / "assets" / "icons"
+
+
+def _icon_url(name: str) -> str:
+    # QSS só carrega `url(...)` de forma confiável apontando pra um arquivo real
+    # (data URI base64 não funciona nas sub-controls ::indicator/::up-arrow) —
+    # ver scripts/generate_settings_icons.py.
+    return _ICONS_DIR.joinpath(name).as_posix()
+
+
+_PT_BR_LOCALE = QLocale(QLocale.Language.Portuguese, QLocale.Country.Brazil)
+
+
+def _token_spinbox(parent: QWidget, value: int) -> QSpinBox:
+    """QSpinBox de contagem de tokens com separador de milhar (100.000, não 100000)."""
+    spin = QSpinBox(parent)
+    spin.setLocale(_PT_BR_LOCALE)
+    spin.setGroupSeparatorShown(True)
+    spin.setRange(1_000, 2_000_000)
+    spin.setSingleStep(10_000)
+    spin.setSuffix(" tokens")
+    spin.setValue(value)
+    return spin
 
 DIALOG_STYLE = """
 QDialog {
@@ -42,6 +68,81 @@ QLabel#hint {
 QCheckBox {
     color: #d8d8dc;
     padding: 2px 0;
+    spacing: 8px;
+}
+QCheckBox::indicator {
+    width: 15px;
+    height: 15px;
+    border: 1px solid #4a4a54;
+    border-radius: 4px;
+    background-color: #17171b;
+}
+QCheckBox::indicator:hover {
+    border-color: #6a6a76;
+}
+QCheckBox::indicator:checked {
+    background-color: #0a84ff;
+    border-color: #0a84ff;
+    image: url(__CHECK_ICON__);
+}
+QCheckBox::indicator:checked:hover {
+    background-color: #3a9bff;
+    border-color: #3a9bff;
+}
+QLineEdit {
+    background-color: #17171b;
+    border: 1px solid #3a3a42;
+    border-radius: 6px;
+    padding: 4px 8px;
+    color: #e6e6ea;
+    selection-background-color: #0a84ff;
+}
+QLineEdit:focus {
+    border: 1px solid #0a84ff;
+}
+QSpinBox, QDoubleSpinBox {
+    background-color: #17171b;
+    border: 1px solid #3a3a42;
+    border-radius: 6px;
+    padding: 2px 4px;
+    color: #e6e6ea;
+}
+QSpinBox:focus, QDoubleSpinBox:focus {
+    border: 1px solid #0a84ff;
+}
+QSpinBox::up-button, QDoubleSpinBox::up-button {
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 16px;
+    border-left: 1px solid #3a3a42;
+    border-top-right-radius: 6px;
+}
+QSpinBox::down-button, QDoubleSpinBox::down-button {
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    width: 16px;
+    border-left: 1px solid #3a3a42;
+    border-bottom-right-radius: 6px;
+}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
+    image: url(__CHEVRON_UP_ICON__);
+    width: 9px;
+    height: 9px;
+}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
+    image: url(__CHEVRON_DOWN_ICON__);
+    width: 9px;
+    height: 9px;
+}
+QWidget#sectionCard {
+    background-color: #202024;
+    border: 1px solid #2f2f36;
+    border-radius: 10px;
+}
+QLabel#sectionTitle {
+    color: #c7c7cf;
+    font-weight: 600;
+    font-size: 9pt;
 }
 QPushButton#arrow {
     background-color: #2b2b31;
@@ -96,6 +197,12 @@ QTabBar::tab:hover {
 }
 """
 
+DIALOG_STYLE = (
+    DIALOG_STYLE.replace("__CHECK_ICON__", _icon_url("check.png"))
+    .replace("__CHEVRON_UP_ICON__", _icon_url("chevron_up.png"))
+    .replace("__CHEVRON_DOWN_ICON__", _icon_url("chevron_down.png"))
+)
+
 
 class _ThresholdRow(QWidget):
     """Uma linha do editor de limiares: quantidade de tokens + cor + remover."""
@@ -116,11 +223,7 @@ class _ThresholdRow(QWidget):
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
 
-        self._spin = QSpinBox(self)
-        self._spin.setRange(1_000, 2_000_000)
-        self._spin.setSingleStep(10_000)
-        self._spin.setSuffix(" tokens")
-        self._spin.setValue(tokens)
+        self._spin = _token_spinbox(self, tokens)
         self._spin.valueChanged.connect(lambda _v: self._on_change())
         row.addWidget(self._spin, 1)
 
@@ -149,6 +252,55 @@ class _ThresholdRow(QWidget):
 
     def value(self) -> list:
         return [self._spin.value(), self._color]
+
+
+class _TokenAlertRow(QWidget):
+    """Uma linha do editor de avisos de contexto: tokens + habilitado + remover,
+    mais uma segunda linha com o texto completo do aviso (emoji incluso)."""
+
+    def __init__(
+        self,
+        tokens: int,
+        message: str,
+        enabled: bool,
+        on_change: Callable[[], None],
+        on_remove: Callable[["_TokenAlertRow"], None],
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._on_change = on_change
+        self._on_remove = on_remove
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(2)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        outer.addLayout(row)
+
+        self._enabled_check = QCheckBox(self)
+        self._enabled_check.setChecked(enabled)
+        self._enabled_check.toggled.connect(lambda _v: self._on_change())
+        row.addWidget(self._enabled_check)
+
+        self._spin = _token_spinbox(self, tokens)
+        self._spin.valueChanged.connect(lambda _v: self._on_change())
+        row.addWidget(self._spin, 1)
+
+        remove_button = QPushButton("✕", self)
+        remove_button.setFixedSize(22, 22)
+        remove_button.clicked.connect(lambda: self._on_remove(self))
+        row.addWidget(remove_button)
+
+        self._message_edit = QLineEdit(self)
+        self._message_edit.setText(message)
+        self._message_edit.setPlaceholderText("Texto do aviso — use {tokens}, {session} e {threshold}")
+        self._message_edit.textChanged.connect(lambda _v: self._on_change())
+        outer.addWidget(self._message_edit)
+
+    def value(self) -> list:
+        return [self._spin.value(), self._message_edit.text(), self._enabled_check.isChecked()]
 
 
 class SettingsDialog(QDialog):
@@ -186,29 +338,46 @@ class SettingsDialog(QDialog):
         buttons.button(QDialogButtonBox.StandardButton.Close).clicked.connect(self.close)
         layout.addWidget(buttons)
 
+    # -- cartão de seção (título + moldura), usado em todas as abas -------
+    def _section(self, title: str) -> tuple[QWidget, QVBoxLayout]:
+        card = QWidget(self)
+        card.setObjectName("sectionCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 14)
+        layout.setSpacing(8)
+
+        title_label = QLabel(title, card)
+        title_label.setObjectName("sectionTitle")
+        layout.addWidget(title_label)
+
+        return card, layout
+
     # -- aba: mascote -------------------------------------------------
     def _build_mascot_tab(self) -> QWidget:
         config = self._config
         tab = QWidget(self)
         layout = QVBoxLayout(tab)
-        layout.setSpacing(12)
+        layout.setSpacing(14)
         layout.setContentsMargins(4, 12, 4, 4)
 
         layout.addLayout(self._build_carousel())
 
+        card, card_layout = self._section("Comportamento")
+
         self._mascot_enabled_check = QCheckBox("Mostrar mascote", self)
         self._mascot_enabled_check.setChecked(config.mascot_enabled)
         self._mascot_enabled_check.toggled.connect(self._on_mascot_enabled_toggled)
-        layout.addWidget(self._mascot_enabled_check)
+        card_layout.addWidget(self._mascot_enabled_check)
 
         self._mascot_sounds_check = QCheckBox("Som do mascote", self)
         self._mascot_sounds_check.setChecked(config.mascot_sounds_enabled)
         self._mascot_sounds_check.toggled.connect(self._on_mascot_sounds_toggled)
-        layout.addWidget(self._mascot_sounds_check)
+        card_layout.addWidget(self._mascot_sounds_check)
 
-        layout.addLayout(self._build_percent_row(
+        card_layout.addLayout(self._build_percent_row(
             "Tamanho do mascote", config.mascot_scale, self._on_mascot_scale_changed
         ))
+        layout.addWidget(card)
         layout.addStretch(1)
         return tab
 
@@ -217,28 +386,35 @@ class SettingsDialog(QDialog):
         config = self._config
         tab = QWidget(self)
         layout = QVBoxLayout(tab)
-        layout.setSpacing(12)
+        layout.setSpacing(14)
         layout.setContentsMargins(4, 12, 4, 4)
+
+        notif_card, notif_layout = self._section("Notificações de erro")
 
         self._alert_beep_check = QCheckBox("Beep de alerta (erro)", self)
         self._alert_beep_check.setChecked(config.alert_beep_enabled)
         self._alert_beep_check.toggled.connect(self._on_alert_beep_toggled)
-        layout.addWidget(self._alert_beep_check)
+        notif_layout.addWidget(self._alert_beep_check)
 
         self._notification_check = QCheckBox("Notificação do sistema (erro)", self)
         self._notification_check.setChecked(config.notification_enabled)
         self._notification_check.toggled.connect(self._on_notification_toggled)
-        layout.addWidget(self._notification_check)
+        notif_layout.addWidget(self._notification_check)
 
-        layout.addLayout(self._build_timing_row(
+        layout.addWidget(notif_card)
+
+        timing_card, timing_layout = self._section("Balão do mascote")
+        timing_layout.addLayout(self._build_timing_row(
             "Revezamento entre sessões (s)", config.mascot_rotation_seconds, self._on_rotation_changed
         ))
-        layout.addLayout(self._build_timing_row(
+        timing_layout.addLayout(self._build_timing_row(
             "Última mensagem ociosa (s)", config.mascot_idle_last_seconds, self._on_idle_last_changed
         ))
-        layout.addLayout(self._build_char_limit_row(
+        timing_layout.addLayout(self._build_char_limit_row(
             "Caracteres no balão antes de truncar", config.mascot_message_limit, self._on_message_limit_changed
         ))
+        layout.addWidget(timing_card)
+
         layout.addStretch(1)
         return tab
 
@@ -246,8 +422,10 @@ class SettingsDialog(QDialog):
     def _build_usage_tab(self) -> QWidget:
         tab = QWidget(self)
         layout = QVBoxLayout(tab)
+        layout.setSpacing(14)
         layout.setContentsMargins(4, 12, 4, 4)
-        layout.addLayout(self._build_usage_section())
+        layout.addWidget(self._build_usage_section())
+        layout.addWidget(self._build_token_alert_section())
         layout.addStretch(1)
         return tab
 
@@ -256,8 +434,10 @@ class SettingsDialog(QDialog):
         row = QHBoxLayout()
         row.setSpacing(12)
 
-        prev_button = QPushButton("◀", self)
+        prev_button = QPushButton(self)
         prev_button.setObjectName("arrow")
+        prev_button.setIcon(QIcon(_icon_url("arrow_left.png")))
+        prev_button.setIconSize(QSize(14, 14))
         prev_button.clicked.connect(lambda: self._step_agent(-1))
         row.addWidget(prev_button)
 
@@ -277,8 +457,10 @@ class SettingsDialog(QDialog):
 
         row.addWidget(card, stretch=1)
 
-        next_button = QPushButton("▶", self)
+        next_button = QPushButton(self)
         next_button.setObjectName("arrow")
+        next_button.setIcon(QIcon(_icon_url("arrow_right.png")))
+        next_button.setIconSize(QSize(14, 14))
         next_button.clicked.connect(lambda: self._step_agent(1))
         row.addWidget(next_button)
 
@@ -309,6 +491,21 @@ class SettingsDialog(QDialog):
         row.addWidget(spin)
         return row
 
+    def _build_token_count_row(self, label_text: str, value: int, on_change: Callable[[int], None]) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addWidget(QLabel(label_text, self))
+        row.addStretch(1)
+        spin = QSpinBox(self)
+        spin.setLocale(_PT_BR_LOCALE)
+        spin.setGroupSeparatorShown(True)
+        spin.setRange(0, 500_000)
+        spin.setSingleStep(5_000)
+        spin.setSuffix(" tokens")
+        spin.setValue(value)
+        spin.valueChanged.connect(on_change)
+        row.addWidget(spin)
+        return row
+
     def _build_percent_row(self, label_text: str, value: int, on_change: Callable[[int], None]) -> QHBoxLayout:
         row = QHBoxLayout()
         row.addWidget(QLabel(label_text, self))
@@ -322,9 +519,8 @@ class SettingsDialog(QDialog):
         row.addWidget(spin)
         return row
 
-    def _build_usage_section(self) -> QVBoxLayout:
-        section = QVBoxLayout()
-        section.setSpacing(6)
+    def _build_usage_section(self) -> QWidget:
+        card, section = self._section("Barra de uso de tokens")
 
         self._usage_bar_check = QCheckBox("Mostrar barra de uso de tokens", self)
         self._usage_bar_check.setChecked(self._config.usage_bar_enabled)
@@ -347,7 +543,7 @@ class SettingsDialog(QDialog):
         add_button.clicked.connect(lambda: self._add_threshold_row(100_000, "#32d74b"))
         section.addWidget(add_button)
 
-        return section
+        return card
 
     def _add_threshold_row(self, tokens: int, color: str, emit: bool = True) -> None:
         row = _ThresholdRow(tokens, color, on_change=self._on_thresholds_changed, on_remove=self._remove_threshold_row, parent=self)
@@ -370,6 +566,59 @@ class SettingsDialog(QDialog):
 
     def _on_usage_bar_toggled(self, checked: bool) -> None:
         self._config.usage_bar_enabled = checked
+        self._emit_change()
+
+    def _build_token_alert_section(self) -> QWidget:
+        card, section = self._section("Avisos de contexto alto")
+
+        hint = QLabel("Dispara balão do mascote + notificação ao atingir cada limiar:", self)
+        hint.setObjectName("hint")
+        section.addWidget(hint)
+
+        self._token_alert_rows: list[_TokenAlertRow] = []
+        self._token_alert_list_layout = QVBoxLayout()
+        self._token_alert_list_layout.setSpacing(4)
+        section.addLayout(self._token_alert_list_layout)
+
+        for tokens, message, enabled in self._config.token_alert_thresholds:
+            self._add_token_alert_row(tokens, message, enabled, emit=False)
+
+        add_button = QPushButton("+ Adicionar aviso", self)
+        add_button.clicked.connect(
+            lambda: self._add_token_alert_row(
+                100_000, "⚠️ {tokens} tokens acumulados na {session} — considere rodar /compact", True
+            )
+        )
+        section.addWidget(add_button)
+
+        section.addLayout(self._build_token_count_row(
+            "Margem pra rearmar o aviso (histerese)", self._config.token_alert_reset_margin, self._on_token_alert_margin_changed
+        ))
+
+        return card
+
+    def _add_token_alert_row(self, tokens: int, message: str, enabled: bool, emit: bool = True) -> None:
+        row = _TokenAlertRow(
+            tokens, message, enabled,
+            on_change=self._on_token_alert_rows_changed, on_remove=self._remove_token_alert_row, parent=self,
+        )
+        self._token_alert_rows.append(row)
+        self._token_alert_list_layout.addWidget(row)
+        if emit:
+            self._on_token_alert_rows_changed()
+
+    def _remove_token_alert_row(self, row: "_TokenAlertRow") -> None:
+        self._token_alert_rows.remove(row)
+        self._token_alert_list_layout.removeWidget(row)
+        row.deleteLater()
+        self._on_token_alert_rows_changed()
+
+    def _on_token_alert_rows_changed(self) -> None:
+        self._config.token_alert_thresholds = [row.value() for row in self._token_alert_rows]
+        self._emit_change()
+
+    def _on_token_alert_margin_changed(self, value: int) -> None:
+        self._config.token_alert_reset_margin = value
         self._emit_change()
 
     def _step_agent(self, direction: int) -> None:

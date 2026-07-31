@@ -10,7 +10,7 @@ from PyQt6.QtGui import QAction, QColor, QGuiApplication, QIcon, QPainter, QPixm
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from audio import play_sound
-from config import Config
+from config import Config, DEFAULT_TOKEN_ALERT_MESSAGE
 from foreground import active_window_pid
 from light_column import LIGHT_COLORS
 from mascot_overlay import MascotOverlay
@@ -43,6 +43,7 @@ class SessionManager:
         self._pid_chains: dict[str, list[int]] = {}
         self._usages: dict[str, dict | None] = {}
         self._status_since: dict[str, float] = {}  # quando o status atual começou (ordem de chegada p/ mascote)
+        self._alerted_tokens: dict[str, set[int]] = {}  # limiares de contexto já disparados por sessão (ver _check_token_alerts)
         self._manually_hidden = False  # usuário escondeu o painel enquanto havia sessões
         self.config = Config.load()
         self.panel.set_usage_config(self.config.usage_bar_enabled, self.config.usage_thresholds)
@@ -158,6 +159,9 @@ class SessionManager:
             self._activities[session_id] = activity
             self._pid_chains[session_id] = data.get("pid_chain") or []
             self._usages[session_id] = data.get("usage")
+            total_tokens = (data.get("usage") or {}).get("total_tokens")
+            if total_tokens is not None:
+                self._check_token_alerts(session_id, label, total_tokens)
             if status != previous_status:
                 self._status_since[session_id] = time.time()
                 # "chegou" numa sessão ociosa vindo de outro estado -> notificação
@@ -181,6 +185,7 @@ class SessionManager:
                 self._pid_chains.pop(session_id, None)
                 self._usages.pop(session_id, None)
                 self._status_since.pop(session_id, None)
+                self._alerted_tokens.pop(session_id, None)
                 self.panel.remove_session(session_id)
 
         self._update_tray_icon(self._aggregate_status())
@@ -205,19 +210,56 @@ class SessionManager:
         if self.config.alert_beep_enabled:
             play_sound(ALERT_SOUND, ALERT_VOLUME_ARGS)
 
-    def _notify_desktop(self, label: str) -> None:
+    def _notify_desktop(self, label: str, message: str = "Precisa da sua atenção", icon: str = "dialog-warning") -> None:
         if not self.config.notification_enabled:
             return
         if not shutil.which("notify-send"):
             return
         try:
             subprocess.Popen(
-                ["notify-send", "-a", "Semáforo de Status", "-i", "dialog-warning", label, "Precisa da sua atenção"],
+                ["notify-send", "-a", "Semáforo de Status", "-i", icon, label, message],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
         except OSError:
             pass
+
+    def _check_token_alerts(self, session_id: str, label: str, total_tokens: int) -> None:
+        """Dispara um aviso (balão do mascote + notificação) uma única vez por
+        limiar configurado, ao atingir `tokens`. Histerese: só rearma depois que
+        `total_tokens` cai abaixo de `tokens - token_alert_reset_margin` — sem
+        isso, ficaríamos alertando toda hora perto do limiar. Não injeta nem
+        dispara `/compact` sozinho: a extensão do VSCode descarta silenciosamente
+        um prompt mandado de fora quando a sessão já está com o painel aberto,
+        então isso é só um lembrete pro usuário compactar manualmente."""
+        fired = self._alerted_tokens.setdefault(session_id, set())
+        margin = self.config.token_alert_reset_margin
+        for tokens, message, enabled in self.config.token_alert_thresholds:
+            if not enabled:
+                continue
+            if total_tokens >= tokens:
+                if tokens not in fired:
+                    fired.add(tokens)
+                    text = self._format_token_alert(message, total_tokens, label, tokens)
+                    self.mascot_overlay.enqueue_idle(label, text)
+                    if not self._session_in_foreground(session_id):
+                        self._notify_desktop(label, text, icon="dialog-information")
+            elif total_tokens < tokens - margin:
+                fired.discard(tokens)
+
+    def _format_token_alert(self, message: str, total_tokens: int, label: str, threshold: int) -> str:
+        """Aplica o texto do próprio limiar (`message`). Como o texto é livre pra
+        edição, um placeholder digitado errado (ex.: {toekns}) não pode derrubar
+        o app — cai pro texto padrão embutido nesse caso."""
+        values = {
+            "tokens": f"{total_tokens:,}".replace(",", "."),
+            "session": label,
+            "threshold": f"{threshold:,}".replace(",", "."),
+        }
+        try:
+            return message.format(**values)
+        except (KeyError, IndexError, ValueError):
+            return DEFAULT_TOKEN_ALERT_MESSAGE.format(**values)
 
     def _check_stale(self) -> None:
         now = time.time()

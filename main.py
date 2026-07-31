@@ -49,6 +49,15 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)  # continua rodando mesmo com o painel oculto
 
+    # sem isso, ⚠️/🔴/etc. no balão do mascote e nos campos de configuração
+    # caem no fallback padrão do Qt e viram um "tofu" monocromático — colocar
+    # a Noto Color Emoji como fallback (não como família principal) resolve
+    # sem afetar o texto normal, e sem precisar embutir a fonte no projeto
+    # (já vem instalada na maioria das distros Linux).
+    default_font = app.font()
+    default_font.setFamilies([default_font.family(), "Noto Color Emoji"])
+    app.setFont(default_font)
+
     panel = SemaphorePanel()
     manager = SessionManager(panel)
     manager.start()
