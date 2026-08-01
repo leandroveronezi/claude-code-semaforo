@@ -479,6 +479,7 @@ class SessionManager:
     def _update_account_usage_badge(self) -> None:
         data = self._account_usage if self.config.account_usage_badge_enabled else None
         self.mascot_overlay.set_account_usage(data)
+        self._sync_mascot_visibility()
 
     def _update_tray_tooltip(self) -> None:
         lines = ["Semáforo de Status"]
@@ -570,8 +571,14 @@ class SessionManager:
         self._sync_mascot_visibility()
 
     def _sync_mascot_visibility(self) -> None:
-        want_visible = bool(self._statuses) and self.config.mascot_enabled and not self._manually_hidden
-        self.mascot_overlay.set_visible_animated(want_visible)
+        # o mascote e a caixa de cota são independentes: desligar "Mostrar
+        # mascote" só tira o personagem (e o balão) da janela — a caixa de
+        # cota, se habilitada e com dado disponível, continua aparecendo
+        # sozinha na mesma posição (ver MascotOverlay._relayout).
+        base_visible = bool(self._statuses) and not self._manually_hidden
+        want_mascot = base_visible and self.config.mascot_enabled
+        want_badge = base_visible and self.config.account_usage_badge_enabled and self.mascot_overlay.has_badge_content
+        self.mascot_overlay.set_visible_animated(want_mascot or want_badge)
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:

@@ -89,6 +89,7 @@ class MascotOverlay(QWidget):
         self._idle_last_ms = int(config.mascot_idle_last_seconds * 1000)
         self._current_duration_ms = self._rotation_ms
         self._mascot_size = _mascot_size_for(config.mascot_scale)
+        self._mascot_enabled = config.mascot_enabled
 
         self._raise_timer = QTimer(self)
         self._raise_timer.setInterval(RAISE_INTERVAL_MS)
@@ -108,6 +109,7 @@ class MascotOverlay(QWidget):
         self.bubble = SpeechBubble(self)
         self.bubble.set_char_limit(config.mascot_message_limit)
         self.mascot = MascotWidget(config.mascot, config.mascot_sounds_enabled, self, size=self._mascot_size)
+        self.mascot.setVisible(self._mascot_enabled)
         self.usage_badge = AccountUsageBadge(self)
 
         self._relayout()
@@ -169,6 +171,10 @@ class MascotOverlay(QWidget):
         dado ou não — ver AccountUsageBadge.has_content."""
         self.usage_badge.set_usage(data)
         self._relayout()
+
+    @property
+    def has_badge_content(self) -> bool:
+        return self.usage_badge.has_content
 
     # -- motor de rotação -----------------------------------------------------------
     def _entries_for(self, tier: str) -> list[Entry]:
@@ -310,28 +316,35 @@ class MascotOverlay(QWidget):
         de cota). A caixa de cota fica sempre colada embaixo do mascote (única
         exceção: perto da borda inferior da tela, sobe pra caber); o balão usa
         a lógica de lado já existente (acima por padrão, ao lado perto do topo)
-        — os dois nunca colidem porque o balão nunca desce abaixo do mascote."""
+        — os dois nunca colidem porque o balão nunca desce abaixo do mascote.
+
+        Com o mascote desligado (config.mascot_enabled=False), ele não entra
+        no cálculo: usamos um retângulo de referência de tamanho zero na
+        própria âncora, então a caixa de cota (se houver) ocupa o lugar dele
+        em vez de deixar um vão vazio, e a janela encolhe de acordo. O balão
+        de fala some junto — não faz sentido sem o personagem pra "falar"."""
         mascot_w, mascot_h = self._mascot_size
         mascot_rect = QRect(self._anchor, QSize(mascot_w, mascot_h))
+        ref_rect = mascot_rect if self._mascot_enabled else QRect(self._anchor, QSize(0, 0))
 
-        screen = QGuiApplication.screenAt(mascot_rect.center()) or QGuiApplication.primaryScreen()
+        screen = QGuiApplication.screenAt(ref_rect.center()) or QGuiApplication.primaryScreen()
         screen_rect = screen.availableGeometry() if screen else QRect(0, 0, 3840, 2160)
 
-        union = QRect(mascot_rect)
+        union = QRect(ref_rect)
 
         badge_rect = None
         if self.usage_badge.has_content:
             badge_size = self.usage_badge.content_size()
-            badge_y = mascot_rect.bottom() + BADGE_GAP
+            badge_y = ref_rect.bottom() + BADGE_GAP
             badge_y = min(badge_y, screen_rect.bottom() - badge_size.height())
-            badge_x = mascot_rect.center().x() - badge_size.width() // 2
+            badge_x = ref_rect.center().x() - badge_size.width() // 2
             badge_x = min(badge_x, screen_rect.right() - badge_size.width())
             badge_x = max(badge_x, screen_rect.left())
             badge_rect = QRect(QPoint(badge_x, badge_y), badge_size)
             union = union.united(badge_rect)
 
         bubble_rect = None
-        if not self.bubble.has_content:
+        if not self._mascot_enabled or not self.bubble.has_content:
             self.bubble.set_tail_side("bottom")
         else:
             body = self.bubble.content_size()
@@ -341,6 +354,10 @@ class MascotOverlay(QWidget):
                 near_right = mascot_rect.right() + GAP + BUBBLE_TAIL_LENGTH + body.width() > screen_rect.right()
                 self.bubble.set_tail_side("left" if near_right else "right")
                 bubble_y = mascot_rect.center().y() - self.bubble.height() // 2
+                # o corpo do balão costuma ser mais alto que o mascote (54px a
+                # 100%); sem este clamp ele "vaza" abaixo da base do mascote e
+                # colide com a caixa de cota, que fica colada bem ali.
+                bubble_y = min(bubble_y, mascot_rect.bottom() - self.bubble.height())
                 bubble_y = min(bubble_y, screen_rect.bottom() - self.bubble.height())
                 bubble_y = max(bubble_y, screen_rect.top())
                 bubble_x = (
@@ -365,6 +382,11 @@ class MascotOverlay(QWidget):
         self.mascot.move(mascot_rect.topLeft() - union.topLeft())
         if badge_rect is not None:
             self.usage_badge.move(badge_rect.topLeft() - union.topLeft())
+        # o clamp acima já evita a sobreposição na prática; isto é só reforço
+        # pro caso extremo de o mascote ficar colado na borda da tela, onde
+        # ainda pode sobrar 1px de toque por arredondamento de QRect.bottom()
+        # — nesse caso o balão (informação do momento) fica por cima.
+        self.bubble.raise_()
         if bubble_rect is not None:
             self.bubble.move(bubble_rect.topLeft() - union.topLeft())
 
@@ -387,6 +409,11 @@ class MascotOverlay(QWidget):
     def update_config(self, config: Config) -> None:
         self.mascot.set_agent(config.mascot)
         self.mascot.set_sound_enabled(config.mascot_sounds_enabled)
+        if config.mascot_enabled != self._mascot_enabled:
+            self._mascot_enabled = config.mascot_enabled
+            self.mascot.setVisible(self._mascot_enabled)
+            if not self._mascot_enabled:
+                self.bubble.set_message(None)
         self._rotation_ms = int(config.mascot_rotation_seconds * 1000)
         self._idle_last_ms = int(config.mascot_idle_last_seconds * 1000)
         self.bubble.set_char_limit(config.mascot_message_limit)
