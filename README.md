@@ -1,189 +1,117 @@
 # Semáforo de Status
 
-Painel flutuante que monitora **uma ou múltiplas sessões** de editores/agentes em tempo real. Cada sessão aparece como uma coluna independente com seu mini semáforo (🔴🟡🟢), e um mascote animado único (estilo MS Agent — Clippy, Merlin, Rocky, Rover, etc.) que reflete o **estado agregado** de todas as sessões.
+Painel flutuante para Linux que monitora sessões de editores e agentes de IA em tempo real. Cada sessão vira uma coluna com um mini semáforo (🔴🟡🟢), e um mascote animado único resume o estado geral de tudo o que está rodando.
 
-## Estados de Status
+Integração pronta com **Claude Code**: basta instalar o hook e cada sessão vira uma coluna automaticamente, sem configuração por projeto.
 
-- 🟢 **Verde** — ocioso / aguardando comando
-- 🟡 **Amarelo** (pulsando) — processando / escrevendo código  
-- 🔴 **Vermelho** — erro / intervenção humana necessária
-  - Toca um alerta sonoro e dispara notificação de desktop (apenas na transição)
-  - Fica em silêncio se você já estiver vendo aquela sessão (detecção de janela ativa via X11)
+<p align="center">
+  <img src="assets/screenshots/painel.png" alt="Painel de semáforos, com barra de tokens por sessão" height="260">
+  &nbsp;&nbsp;
+  <img src="assets/screenshots/mascote-cota.png" alt="Mascote com balão de fala e cota da conta (Sessão 5h / Semana 7d)" height="260">
+</p>
 
-## O Mascote
+## Estados
 
-Um mascote animado único que representa o **estado geral** do painel. Escolha entre:
-Clippy, Merlin, Rocky, Rover, Links, F1, Genius, Bonzi, Genie ou Peedy. 
+| | Status | Significado |
+|---|--------|-------------|
+| 🟢 | **Verde** | Ocioso — aguardando comando |
+| 🟡 | **Amarelo** (pulsando) | Processando / escrevendo código |
+| 🔴 | **Vermelho** | Erro ou intervenção humana necessária |
 
-Mostra um balão de fala com preview da última resposta quando uma sessão termina ou entra em erro. Assets originais do projeto [clippy.js](https://github.com/clippyjs/clippy.js) (sprites Microsoft, uso pessoal/local apenas, sem redistribuição).
-
-## Configurações
-
-Acesse pelo ícone da bandeja do sistema → **Configurações...**
-
-| Opção | Efeito |
-|-------|--------|
-| **Personagem** | Escolha qual mascote animar (Clippy, Merlin, etc.) |
-| **Tamanho** | Ajuste a escala do mascote em pixels |
-| **Som** | Ativar/desativar sons de movimento e alerta |
-| **Mostrar mascote** | Alternar entre painel completo (mascote + luzes) ou apenas as luzes |
-| **Beep de alerta** | Ativar/desativar som quando uma sessão entra em erro |
-| **Notificação de desktop** | Ativar/desativar pop-up de notificação |
-| **Tempo de revezamento** | Velocidade de rotação entre múltiplas sessões (ms) |
-| **Tempo de mensagem** | Quanto tempo a fala do mascote fica visível (ms) |
-
-Preferências salvas em `~/.config/semaforo-status/config.yaml`.
+O vermelho toca um alerta sonoro e dispara uma notificação de desktop na transição — mas fica em silêncio se você já estiver com aquela janela em foco (detecção via X11).
 
 ## Instalação
 
-**Requisitos:** Python 3.9+ e dependências de compilação do PyQt6 (em sistemas sem wheels pré-compiladas).
+Requer Python 3.9+.
 
 ```bash
 pip install -r requirements.txt
+python3 main.py
 ```
 
-Se o pip tentar compilar e falhar com erro `qmake`, force as versões testadas:
+Se o pip tentar compilar o PyQt6 e falhar (erro `qmake`), force as versões testadas:
 
 ```bash
 pip install --user "PyQt6==6.6.1" "PyQt6-Qt6==6.6.3"
 ```
 
-> **Dica:** Em algumas distribuições Linux, você pode precisar instalar `python3-dev` e `libgl1-mesa-dev` antes.
+> Em algumas distribuições, instale antes `python3-dev` e `libgl1-mesa-dev`.
 
-## Executando
+Um ícone aparece na bandeja do sistema assim que o app inicia. O painel só flutua na tela quando há pelo menos uma sessão ativa, e sua posição é lembrada entre execuções — arraste pela barra de título para mover.
 
-```bash
-python3 main.py
-```
-
-### Comportamento
-
-- Um ícone de bandeja aparece imediatamente
-- O painel flutua apenas quando há **pelo menos uma sessão ativa** (sem sessões, fica oculto)
-- A posição do painel é lembrada entre execuções
-
-### Controles
-
-| Ação | Como fazer |
-|------|-----------|
-| **Mover painel** | Arrastar a barra de título (clique e segure) |
-| **Mostrar/ocultar** | Clique no ícone da bandeja ou botão direito no painel |
-| **Abrir menu** | Botão direito no ícone da bandeja |
-| **Sair** | Menu da bandeja → "Sair" |
-
-## Abrir Automaticamente no Login
-
-Usa o mecanismo padrão do freedesktop.org (compatível com KDE, GNOME, XFCE, etc. — sem systemd):
+Para abrir automaticamente no login (freedesktop.org, compatível com KDE/GNOME/XFCE):
 
 ```bash
-python3 autostart.py install   # ativar — abre sozinho no próximo login
-python3 autostart.py remove    # desativar
-python3 autostart.py status    # verificar estado atual
+python3 autostart.py install
 ```
 
-Cria um arquivo `.desktop` em `~/.config/autostart/` que funciona em qualquer desktop Linux.
-
-## Integração com Claude Code (Automática)
-
-Já vem pronta a integração com Claude Code via hooks. Cada sessão do Claude Code (em qualquer projeto) **vira uma coluna automaticamente**, sem configuração manual.
-
-### Como funciona
-
-Os hooks são registrados em `~/.claude/settings.json` (nível usuário) e refletem os eventos do Claude Code:
-
-| Evento | Status |
-|--------|--------|
-| Sessão iniciada | 🟢 idle |
-| Comando enviado / ferramenta em uso | 🟡 working |
-| Aguardando aprovação ou permissão | 🔴 error |
-| Resposta completa | 🟢 idle |
-| Sessão encerrada | remove coluna |
-
-O hook também extrai um preview da última resposta do Claude para o balão de fala do mascote (melhor esforço — nunca trava se não conseguir).
-
-**Nota:** Isso cobre apenas Claude Code. Para integrar outros editores/agentes, veja [Reportando Status Manual](#reportando-status-manual).
-
-### Instalação dos Hooks
-
-Na **primeira execução** em uma máquina nova, instale os hooks:
+## Integração com Claude Code
 
 ```bash
 python3 hooks/install.py
 ```
 
-Isso mescla os hooks do Semáforo em `~/.claude/settings.json` **sem apagar** outras configurações/hooks já existentes.
+Mescla os hooks do Semáforo em `~/.claude/settings.json` sem apagar configurações existentes. A partir daí, toda sessão do Claude Code (em qualquer projeto) vira uma coluna automaticamente, refletindo o ciclo de vida real da sessão:
 
-#### Comportamento automático
-
-- `main.py` verifica os hooks a cada início
-- Se detectar que o projeto foi movido/renomeado, reinstala automaticamente
-- Notifica por desktop quando faz isso
-- Você **não precisa** rodar `hooks/install.py` manualmente novamente
-
-#### Recarregar hooks manualmente
-
-Se editar `settings.json` diretamente, use `/hooks` no Claude Code (ou reinicie a sessão).
-
-### Limpeza Automática de Sessões Travadas
-
-O painel verifica periodicamente a idade da última atualização:
-
-| Tempo sem atualização | Ação |
+| Evento do Claude Code | Status |
 |---|---|
-| 10+ minutos em `working` ou `error` | Revert para `idle` (provável travamento) |
-| 4+ horas, qualquer status | Remove a coluna |
+| Sessão iniciada / resposta completa | 🟢 idle |
+| Comando enviado / ferramenta em uso | 🟡 working |
+| Aguardando aprovação ou permissão | 🔴 error |
+| Sessão encerrada | remove a coluna |
 
-**Sessões em `idle` nunca são removidas por idade** — é normal ficar ocioso.
+O balão de fala do mascote mostra um preview da última resposta quando uma sessão termina ou entra em erro. Se o projeto for movido ou renomeado, `main.py` detecta e reinstala os hooks sozinho a cada início — não é preciso rodar `hooks/install.py` de novo manualmente.
 
-## Testar com Dados Simulados
+## O Mascote
 
-Sem precisar de um agente real, abra outro terminal e execute:
+Um mascote animado único (estilo MS Agent) representa o estado agregado de todas as sessões, com prioridade erro > processando > ocioso. Escolha o personagem em **Configurações → Mascote**:
 
-```bash
-python3 simulate.py
-```
+<p align="center">
+  <img src="assets/screenshots/mascotes.png" alt="Clippy, Merlin, Rocky, Rover, Links, F1, Genius, Bonzi, Genie e Peedy" width="720">
+</p>
 
-Cria 3 sessões fictícias que alternam entre os estados (idle/working/error) a cada poucos segundos — útil para testar a animação do mascote e o comportamento do painel antes de integrar com o Claude Code.
+Clippy, Merlin, Rocky, Rover, Links, F1, Genius, Bonzi, Genie e Peedy. Assets originais do projeto [clippy.js](https://github.com/clippyjs/clippy.js) (sprites Microsoft redistribuídos pela comunidade sem licença clara — uso pessoal/local apenas).
 
-## Reportando Status Manual
+## Configurações
 
-Para integrar editores/agentes **personalizados**, reporte o status via CLI. O protocolo é simples: cada sessão é um arquivo JSON em `sessions/<session_id>.json` que o painel monitora em tempo real.
+Acesse pelo ícone da bandeja → **Configurações...** (persistidas em `~/.config/semaforo-status/config.yaml`).
 
-### Usando o comando `status_writer.py`
+| Opção | Efeito |
+|-------|--------|
+| Personagem | Qual mascote animar |
+| Tamanho | Escala do mascote em pixels |
+| Som | Sons de movimento e de alerta |
+| Mostrar mascote | Painel completo (mascote + luzes) ou só as luzes |
+| Beep / notificação de desktop | Alertas ao entrar em erro |
+| Tempo de revezamento | Velocidade de rotação entre sessões |
+| Tempo de mensagem | Duração do balão de fala |
+
+Sessões `working`/`error` sem atualização por 10+ minutos voltam para `idle` (provável travamento); qualquer sessão parada por 4+ horas é removida. Sessões `idle` nunca são removidas por idade.
+
+## Integrando outros editores/agentes
+
+O protocolo é um arquivo JSON por sessão em `sessions/<session_id>.json`, monitorado em tempo real. Reporte via CLI:
 
 ```bash
 python3 status_writer.py <id> <idle|working|error> --label "Nome" [--message "Texto do balão"]
 ```
 
-### Exemplos
-
 ```bash
-# Quando uma tarefa inicia
 python3 status_writer.py vscode-1 working --label "VSCode — Projeto A"
-
-# Quando termina (com preview no balão)
-python3 status_writer.py vscode-1 idle --label "VSCode — Projeto A" --message "✓ Código gerado"
-
-# Quando há erro
-python3 status_writer.py vscode-1 error --label "VSCode — Projeto A" --message "⚠ Permissão recusada"
+python3 status_writer.py vscode-1 idle    --label "VSCode — Projeto A" --message "✓ Código gerado"
+python3 status_writer.py vscode-1 error   --label "VSCode — Projeto A" --message "⚠ Permissão recusada"
 ```
 
-### Múltiplas sessões
-
-Use um `session_id` diferente para cada editor/aba — cada um vira uma coluna independente:
-
-```bash
-python3 status_writer.py neovim-1 working --label "Neovim — config"
-python3 status_writer.py vscode-1 idle --label "VSCode — main"
-# Painel mostra 2 colunas lado a lado
-```
-
-### Diretório customizado
-
-Para usar outro local (ex.: compartilhado entre múltiplas instâncias do app):
+Cada `session_id` diferente vira uma coluna independente. Para compartilhar estado entre múltiplas instâncias do app, aponte todas para o mesmo diretório:
 
 ```bash
 export SEMAFORO_STATUS_DIR=/tmp/semaforo-sessions
-python3 main.py &
-python3 status_writer.py my-session working --label "Custom Editor"
 ```
+
+### Testar sem um agente real
+
+```bash
+python3 simulate.py
+```
+
+Cria 3 sessões fictícias alternando entre idle/working/error — útil para ver o painel e o mascote em ação antes de integrar de verdade.
