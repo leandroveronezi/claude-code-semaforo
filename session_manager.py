@@ -38,7 +38,7 @@ STATUS_PRIORITY = ("error", "working", "idle")  # pior -> melhor, para o ícone 
 SETTINGS_KEY = "panel/pos"
 ACCOUNT_USAGE_POLL_MS = 5 * 60 * 1000  # rede de segurança pra quando não há Stop nenhum (usuário parado/AFK); o gatilho principal é _on_session_finished
 ACCOUNT_USAGE_FIRST_FETCH_MS = 5_000
-ACCOUNT_USAGE_MIN_INTERVAL_SECONDS = 60  # debounce do gatilho por Stop: várias sessões terminando quase juntas não devem virar N consultas (fetch_account_usage() é lento, ~15s, spawna um claude de verdade, e a Anthropic parece limitar consultas em sequência rápida — ver account_usage.py)
+ACCOUNT_USAGE_MIN_INTERVAL_SECONDS = 5 * 60  # debounce global de _poll_account_usage (cobre Stop, timer de 5min e reset_requery): fetch_account_usage() spawna um claude de verdade (~15-20s) só pra ler uma tela que não muda em escala de minuto, e a Anthropic parece limitar consultas em sequência rápida (ver account_usage.py) — 60s já testava esse limite em sessões com Stops frequentes, 5min alinha com o próprio intervalo do timer de segurança (ACCOUNT_USAGE_POLL_MS) e reduz bastante o pior caso sem perder responsividade perceptível
 RESET_REQUERY_BUFFER_SECONDS = 30  # folga depois do horário de reset (best-effort: dá tempo do servidor rolar a janela antes de consultarmos)
 RESET_REQUERY_MAX_DELAY_SECONDS = 8 * 24 * 60 * 60  # teto de sanidade (semana nunca reseta a mais de 7 dias daqui) — protege contra um parse de data estranho agendar pra um delay absurdo
 
@@ -128,7 +128,12 @@ class SessionManager:
         # até a primeira consulta real (lenta, ~5-30s) responder.
         self._account_usage: dict | None = load_cached_usage()
         self._account_usage_thread: _AccountUsageThread | None = None
-        self._account_usage_last_attempt = 0.0
+        # semeia com o fetched_at do cache (não 0.0): se o app reabriu pouco
+        # depois de fechar (cache ainda dentro do debounce), a consulta de
+        # abertura em ACCOUNT_USAGE_FIRST_FETCH_MS é engolida pelo próprio
+        # debounce de _poll_account_usage em vez de repetir uma pergunta cuja
+        # resposta a gente já tem — sem precisar de lógica extra além dessa.
+        self._account_usage_last_attempt = (self._account_usage or {}).get("fetched_at") or 0.0
         self.account_usage_timer = QTimer()
         self.account_usage_timer.setInterval(ACCOUNT_USAGE_POLL_MS)
         self.account_usage_timer.timeout.connect(self._poll_account_usage)
