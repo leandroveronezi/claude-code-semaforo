@@ -1,3 +1,5 @@
+*Português | [English](README.en.md)*
+
 # Semáforo de Status
 
 Painel flutuante para Linux que monitora sessões de editores e agentes de IA em tempo real. Cada sessão vira uma coluna com um mini semáforo (🔴🟡🟢), e um mascote animado único resume o estado geral de tudo o que está rodando.
