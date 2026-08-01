@@ -11,6 +11,7 @@ configurar "statusLine" substitui a barra de status nativa do Claude Code.
 Uso: statusline_hook.py (chamado pelo Claude Code, não à mão)
 """
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -34,6 +35,9 @@ def _render_statusline(payload: dict, context_window: dict, cost: dict) -> str:
 
 
 def main() -> None:
+    if os.environ.get("SEMAFORO_SKIP_HOOK"):
+        return
+
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):

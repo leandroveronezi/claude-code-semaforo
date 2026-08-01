@@ -162,6 +162,12 @@ def _pending_request_text(payload: dict) -> str | None:
 
 
 def main() -> None:
+    # account_usage.py dispara um claude real (num pty) só pra ler /usage;
+    # sem essa saída antecipada, essa sessão descartável apareceria como uma
+    # sessão fantasma no painel.
+    if os.environ.get("SEMAFORO_SKIP_HOOK"):
+        return
+
     if len(sys.argv) != 2 or sys.argv[1] not in ("idle", "working", "error", "remove"):
         print("uso: status_hook.py <idle|working|error|remove>", file=sys.stderr)
         sys.exit(1)

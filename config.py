@@ -35,6 +35,26 @@ DEFAULT_TOKEN_ALERT_MESSAGE = "⚠️ {tokens} tokens acumulados na {session} �
 
 _DEFAULT_TOKEN_ALERT_TEXT = "{symbol} {tokens} tokens acumulados na {session} — considere rodar /compact"
 
+# limiares de aviso de cota da conta: [percentual, mensagem, habilitado].
+# mesma mecânica dos avisos de contexto (dispara uma vez ao atingir o
+# percentual, rearma com histerese), mas usando o % de uso da cota (raspado
+# de /usage via account_usage.py) em vez de tokens acumulados na sessão.
+# `mensagem` aceita os placeholders {pct} (percentual atual) e {reset}
+# (horário de reset, como exibido pelo próprio /usage).
+DEFAULT_SESSION_PCT_ALERT_THRESHOLDS = [
+    [80, "⚠️ Sessão (5h) em {pct}% — reseta {reset}", True],
+    [95, "🔴 Sessão (5h) em {pct}% — reseta {reset}", True],
+]
+DEFAULT_WEEK_PCT_ALERT_THRESHOLDS = [
+    [80, "⚠️ Semana (7d) em {pct}% — reseta {reset}", True],
+    [95, "🔴 Semana (7d) em {pct}% — reseta {reset}", True],
+]
+
+# usados só como rede de segurança se o texto de um limiar tiver um
+# placeholder inválido e `str.format` estourar — nunca editáveis pelo usuário.
+DEFAULT_SESSION_PCT_ALERT_MESSAGE = "⚠️ Sessão (5h) em {pct}%"
+DEFAULT_WEEK_PCT_ALERT_MESSAGE = "⚠️ Semana (7d) em {pct}%"
+
 
 def _migrate_token_alert_row(row: list) -> list:
     """Converte formatos antigos de linha pro atual [tokens, mensagem, habilitado].
@@ -74,8 +94,17 @@ class Config:
     mascot_message_limit: int = 150  # nº de caracteres exibidos no balão antes de truncar com "…"
     usage_bar_enabled: bool = True
     usage_thresholds: list = field(default_factory=lambda: [row[:] for row in DEFAULT_USAGE_THRESHOLDS])
+    account_usage_badge_enabled: bool = True  # caixa de cota da conta (Sessão 5h / Semana 7d) abaixo do mascote
     token_alert_thresholds: list = field(default_factory=lambda: [row[:] for row in DEFAULT_TOKEN_ALERT_THRESHOLDS])
     token_alert_reset_margin: int = 20_000  # tokens abaixo do limiar pra rearmar o aviso (histerese)
+    session_pct_alert_thresholds: list = field(
+        default_factory=lambda: [row[:] for row in DEFAULT_SESSION_PCT_ALERT_THRESHOLDS]
+    )
+    session_pct_alert_reset_margin: int = 10  # pontos percentuais abaixo do limiar pra rearmar o aviso (histerese)
+    week_pct_alert_thresholds: list = field(
+        default_factory=lambda: [row[:] for row in DEFAULT_WEEK_PCT_ALERT_THRESHOLDS]
+    )
+    week_pct_alert_reset_margin: int = 10  # pontos percentuais abaixo do limiar pra rearmar o aviso (histerese)
 
     @classmethod
     def load(cls) -> "Config":

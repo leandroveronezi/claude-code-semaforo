@@ -49,6 +49,16 @@ def _token_spinbox(parent: QWidget, value: int) -> QSpinBox:
     spin.setValue(value)
     return spin
 
+
+def _pct_alert_spinbox(parent: QWidget, value: int) -> QSpinBox:
+    """QSpinBox de percentual (0-100%) pros avisos de cota da conta."""
+    spin = QSpinBox(parent)
+    spin.setRange(0, 100)
+    spin.setSingleStep(5)
+    spin.setSuffix("%")
+    spin.setValue(value)
+    return spin
+
 DIALOG_STYLE = """
 QDialog {
     background-color: #1c1c20;
@@ -303,6 +313,57 @@ class _TokenAlertRow(QWidget):
         return [self._spin.value(), self._message_edit.text(), self._enabled_check.isChecked()]
 
 
+class _PctAlertRow(QWidget):
+    """Uma linha do editor de avisos de cota da conta (sessão 5h / semana 7d):
+    percentual + habilitado + remover, mais uma segunda linha com o texto
+    completo do aviso — mesma estrutura de `_TokenAlertRow`, trocando tokens
+    acumulados por % de cota consumida."""
+
+    def __init__(
+        self,
+        pct: int,
+        message: str,
+        enabled: bool,
+        on_change: Callable[[], None],
+        on_remove: Callable[["_PctAlertRow"], None],
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._on_change = on_change
+        self._on_remove = on_remove
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(2)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        outer.addLayout(row)
+
+        self._enabled_check = QCheckBox(self)
+        self._enabled_check.setChecked(enabled)
+        self._enabled_check.toggled.connect(lambda _v: self._on_change())
+        row.addWidget(self._enabled_check)
+
+        self._spin = _pct_alert_spinbox(self, pct)
+        self._spin.valueChanged.connect(lambda _v: self._on_change())
+        row.addWidget(self._spin, 1)
+
+        remove_button = QPushButton("✕", self)
+        remove_button.setFixedSize(22, 22)
+        remove_button.clicked.connect(lambda: self._on_remove(self))
+        row.addWidget(remove_button)
+
+        self._message_edit = QLineEdit(self)
+        self._message_edit.setText(message)
+        self._message_edit.setPlaceholderText("Texto do aviso — use {pct} e {reset}")
+        self._message_edit.textChanged.connect(lambda _v: self._on_change())
+        outer.addWidget(self._message_edit)
+
+    def value(self) -> list:
+        return [self._spin.value(), self._message_edit.text(), self._enabled_check.isChecked()]
+
+
 class SettingsDialog(QDialog):
     def __init__(
         self,
@@ -323,10 +384,14 @@ class SettingsDialog(QDialog):
         layout.setSpacing(12)
         layout.setContentsMargins(20, 20, 20, 16)
 
+        self._pct_alert_rows: dict[str, list["_PctAlertRow"]] = {"session": [], "week": []}
+        self._pct_alert_list_layout: dict[str, QVBoxLayout] = {}
+
         tabs = QTabWidget(self)
         tabs.addTab(self._build_mascot_tab(), "Mascote")
         tabs.addTab(self._build_alerts_tab(), "Alertas")
         tabs.addTab(self._build_usage_tab(), "Uso de tokens")
+        tabs.addTab(self._build_account_quota_tab(), "Cota da conta")
         layout.addWidget(tabs)
 
         hint = QLabel("As mudanças aplicam na hora, sem precisar reiniciar.", self)
@@ -373,6 +438,11 @@ class SettingsDialog(QDialog):
         self._mascot_sounds_check.setChecked(config.mascot_sounds_enabled)
         self._mascot_sounds_check.toggled.connect(self._on_mascot_sounds_toggled)
         card_layout.addWidget(self._mascot_sounds_check)
+
+        self._account_usage_badge_check = QCheckBox("Mostrar cota da conta (Sessão 5h / Semana 7d)", self)
+        self._account_usage_badge_check.setChecked(config.account_usage_badge_enabled)
+        self._account_usage_badge_check.toggled.connect(self._on_account_usage_badge_toggled)
+        card_layout.addWidget(self._account_usage_badge_check)
 
         card_layout.addLayout(self._build_percent_row(
             "Tamanho do mascote", config.mascot_scale, self._on_mascot_scale_changed
@@ -428,6 +498,96 @@ class SettingsDialog(QDialog):
         layout.addWidget(self._build_token_alert_section())
         layout.addStretch(1)
         return tab
+
+    # -- aba: cota da conta (sessão 5h / semana 7d) -------------------------
+    def _build_account_quota_tab(self) -> QWidget:
+        tab = QWidget(self)
+        layout = QVBoxLayout(tab)
+        layout.setSpacing(14)
+        layout.setContentsMargins(4, 12, 4, 4)
+        layout.addWidget(self._build_pct_alert_section(
+            "session", "Avisos de cota — Sessão (5h)",
+            self._config.session_pct_alert_thresholds, self._config.session_pct_alert_reset_margin,
+        ))
+        layout.addWidget(self._build_pct_alert_section(
+            "week", "Avisos de cota — Semana (7d)",
+            self._config.week_pct_alert_thresholds, self._config.week_pct_alert_reset_margin,
+        ))
+        layout.addStretch(1)
+        return tab
+
+    def _build_pct_alert_section(self, key: str, title: str, thresholds: list, margin: int) -> QWidget:
+        card, section = self._section(title)
+
+        hint = QLabel("Dispara balão do mascote + notificação ao atingir cada percentual:", self)
+        hint.setObjectName("hint")
+        section.addWidget(hint)
+
+        list_layout = QVBoxLayout()
+        list_layout.setSpacing(4)
+        section.addLayout(list_layout)
+        self._pct_alert_list_layout[key] = list_layout
+
+        for pct, message, enabled in thresholds:
+            self._add_pct_alert_row(key, pct, message, enabled, emit=False)
+
+        add_button = QPushButton("+ Adicionar aviso", self)
+        add_button.clicked.connect(
+            lambda: self._add_pct_alert_row(key, 80, "⚠️ {pct}% da cota — reseta {reset}", True)
+        )
+        section.addWidget(add_button)
+
+        section.addLayout(self._build_percent_margin_row(
+            "Margem pra rearmar o aviso (histerese)", margin, lambda value: self._on_pct_alert_margin_changed(key, value),
+        ))
+
+        return card
+
+    def _build_percent_margin_row(self, label_text: str, value: int, on_change: Callable[[int], None]) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addWidget(QLabel(label_text, self))
+        row.addStretch(1)
+        spin = QSpinBox(self)
+        spin.setRange(1, 100)
+        spin.setSingleStep(5)
+        spin.setSuffix(" pontos %")
+        spin.setValue(value)
+        spin.valueChanged.connect(on_change)
+        row.addWidget(spin)
+        return row
+
+    def _add_pct_alert_row(self, key: str, pct: int, message: str, enabled: bool, emit: bool = True) -> None:
+        row = _PctAlertRow(
+            pct, message, enabled,
+            on_change=lambda: self._on_pct_alert_rows_changed(key),
+            on_remove=lambda r: self._remove_pct_alert_row(key, r),
+            parent=self,
+        )
+        self._pct_alert_rows[key].append(row)
+        self._pct_alert_list_layout[key].addWidget(row)
+        if emit:
+            self._on_pct_alert_rows_changed(key)
+
+    def _remove_pct_alert_row(self, key: str, row: "_PctAlertRow") -> None:
+        self._pct_alert_rows[key].remove(row)
+        self._pct_alert_list_layout[key].removeWidget(row)
+        row.deleteLater()
+        self._on_pct_alert_rows_changed(key)
+
+    def _on_pct_alert_rows_changed(self, key: str) -> None:
+        values = [row.value() for row in self._pct_alert_rows[key]]
+        if key == "session":
+            self._config.session_pct_alert_thresholds = values
+        else:
+            self._config.week_pct_alert_thresholds = values
+        self._emit_change()
+
+    def _on_pct_alert_margin_changed(self, key: str, value: int) -> None:
+        if key == "session":
+            self._config.session_pct_alert_reset_margin = value
+        else:
+            self._config.week_pct_alert_reset_margin = value
+        self._emit_change()
 
     # -- carrossel de personagem -------------------------------------------------
     def _build_carousel(self) -> QHBoxLayout:
@@ -639,6 +799,10 @@ class SettingsDialog(QDialog):
 
     def _on_mascot_sounds_toggled(self, checked: bool) -> None:
         self._config.mascot_sounds_enabled = checked
+        self._emit_change()
+
+    def _on_account_usage_badge_toggled(self, checked: bool) -> None:
+        self._config.account_usage_badge_enabled = checked
         self._emit_change()
 
     def _on_mascot_scale_changed(self, value: int) -> None:

@@ -29,14 +29,16 @@ from PyQt6.QtCore import QPoint, QRect, QSettings, QSize, Qt, QTimer
 from PyQt6.QtGui import QCursor, QGuiApplication
 from PyQt6.QtWidgets import QWidget
 
+from account_usage_widget import AccountUsageBadge
 from config import Config
 from mascot import MASCOT_HEIGHT, MASCOT_WIDTH, MascotWidget
 from speech_bubble import TAIL_HEIGHT as BUBBLE_TAIL_LENGTH
 from speech_bubble import SpeechBubble
 
 SETTINGS_KEY = "mascot/pos"
-MARGIN = 12  # respiro entre o conteúdo (mascote+balão) e a borda da janela
+MARGIN = 12  # respiro entre o conteúdo (mascote+balão+cota) e a borda da janela
 GAP = 2  # distância entre o corpo do mascote e o corpo do balão (o rabinho preenche visualmente)
+BADGE_GAP = 6  # distância entre o mascote e a caixa de cota da conta, abaixo dele
 DEFAULT_POS = QPoint(160, 160)
 RAISE_INTERVAL_MS = 700  # ver comentário em _AlwaysOnTopTooltip (semaphore_panel.py)
 
@@ -106,6 +108,7 @@ class MascotOverlay(QWidget):
         self.bubble = SpeechBubble(self)
         self.bubble.set_char_limit(config.mascot_message_limit)
         self.mascot = MascotWidget(config.mascot, config.mascot_sounds_enabled, self, size=self._mascot_size)
+        self.usage_badge = AccountUsageBadge(self)
 
         self._relayout()
 
@@ -159,6 +162,13 @@ class MascotOverlay(QWidget):
             # normal (não a longa); se já passou do novo tempo, o próximo
             # tick avança pra ele. Não mexe no elapsed: não reinicia a conta.
             self._current_duration_ms = self._rotation_ms
+
+    def set_account_usage(self, data: "dict | None") -> None:
+        """Cota da conta (Sessão 5h / Semana 7d), vinda de account_usage.py via
+        SessionManager. Cresce/some a caixa abaixo do mascote conforme haja
+        dado ou não — ver AccountUsageBadge.has_content."""
+        self.usage_badge.set_usage(data)
+        self._relayout()
 
     # -- motor de rotação -----------------------------------------------------------
     def _entries_for(self, tier: str) -> list[Entry]:
@@ -293,49 +303,70 @@ class MascotOverlay(QWidget):
         y = min(max(point.y(), bounds.top()), bounds.bottom() - mascot_h)
         return QPoint(x, y)
 
-    # -- posicionamento inteligente do balão -----------------------------------------------------------
+    # -- posicionamento inteligente do balão e da caixa de cota --------------------------------
     def _relayout(self) -> None:
+        """Recalcula a janela inteira ao redor de self._anchor (o mascote nunca
+        se move sozinho — é a janela que cresce/encolhe pra caber balão e caixa
+        de cota). A caixa de cota fica sempre colada embaixo do mascote (única
+        exceção: perto da borda inferior da tela, sobe pra caber); o balão usa
+        a lógica de lado já existente (acima por padrão, ao lado perto do topo)
+        — os dois nunca colidem porque o balão nunca desce abaixo do mascote."""
         mascot_w, mascot_h = self._mascot_size
         mascot_rect = QRect(self._anchor, QSize(mascot_w, mascot_h))
 
         screen = QGuiApplication.screenAt(mascot_rect.center()) or QGuiApplication.primaryScreen()
         screen_rect = screen.availableGeometry() if screen else QRect(0, 0, 3840, 2160)
 
+        union = QRect(mascot_rect)
+
+        badge_rect = None
+        if self.usage_badge.has_content:
+            badge_size = self.usage_badge.content_size()
+            badge_y = mascot_rect.bottom() + BADGE_GAP
+            badge_y = min(badge_y, screen_rect.bottom() - badge_size.height())
+            badge_x = mascot_rect.center().x() - badge_size.width() // 2
+            badge_x = min(badge_x, screen_rect.right() - badge_size.width())
+            badge_x = max(badge_x, screen_rect.left())
+            badge_rect = QRect(QPoint(badge_x, badge_y), badge_size)
+            union = union.united(badge_rect)
+
+        bubble_rect = None
         if not self.bubble.has_content:
             self.bubble.set_tail_side("bottom")
-            union = mascot_rect.adjusted(-MARGIN, -MARGIN, MARGIN, MARGIN)
-            self.setGeometry(union)
-            self.mascot.move(mascot_rect.topLeft() - union.topLeft())
-            return
-
-        body = self.bubble.content_size()
-        near_top = mascot_rect.top() - GAP - BUBBLE_TAIL_LENGTH - body.height() < screen_rect.top()
-
-        if near_top:
-            near_right = mascot_rect.right() + GAP + BUBBLE_TAIL_LENGTH + body.width() > screen_rect.right()
-            self.bubble.set_tail_side("left" if near_right else "right")
-            bubble_y = mascot_rect.center().y() - self.bubble.height() // 2
-            bubble_y = min(bubble_y, screen_rect.bottom() - self.bubble.height())
-            bubble_y = max(bubble_y, screen_rect.top())
-            bubble_x = (
-                mascot_rect.left() - GAP - self.bubble.width()
-                if near_right
-                else mascot_rect.right() + GAP
-            )
-            bubble_x = min(bubble_x, screen_rect.right() - self.bubble.width())
-            bubble_x = max(bubble_x, screen_rect.left())
         else:
-            self.bubble.set_tail_side("bottom")
-            bubble_y = mascot_rect.top() - GAP - self.bubble.height()
-            bubble_x = mascot_rect.center().x() - self.bubble.width() // 2
-            bubble_x = min(bubble_x, screen_rect.right() - self.bubble.width())
-            bubble_x = max(bubble_x, screen_rect.left())
+            body = self.bubble.content_size()
+            near_top = mascot_rect.top() - GAP - BUBBLE_TAIL_LENGTH - body.height() < screen_rect.top()
 
-        bubble_rect = QRect(QPoint(bubble_x, bubble_y), self.bubble.size())
-        union = mascot_rect.united(bubble_rect).adjusted(-MARGIN, -MARGIN, MARGIN, MARGIN)
+            if near_top:
+                near_right = mascot_rect.right() + GAP + BUBBLE_TAIL_LENGTH + body.width() > screen_rect.right()
+                self.bubble.set_tail_side("left" if near_right else "right")
+                bubble_y = mascot_rect.center().y() - self.bubble.height() // 2
+                bubble_y = min(bubble_y, screen_rect.bottom() - self.bubble.height())
+                bubble_y = max(bubble_y, screen_rect.top())
+                bubble_x = (
+                    mascot_rect.left() - GAP - self.bubble.width()
+                    if near_right
+                    else mascot_rect.right() + GAP
+                )
+                bubble_x = min(bubble_x, screen_rect.right() - self.bubble.width())
+                bubble_x = max(bubble_x, screen_rect.left())
+            else:
+                self.bubble.set_tail_side("bottom")
+                bubble_y = mascot_rect.top() - GAP - self.bubble.height()
+                bubble_x = mascot_rect.center().x() - self.bubble.width() // 2
+                bubble_x = min(bubble_x, screen_rect.right() - self.bubble.width())
+                bubble_x = max(bubble_x, screen_rect.left())
+
+            bubble_rect = QRect(QPoint(bubble_x, bubble_y), self.bubble.size())
+            union = union.united(bubble_rect)
+
+        union = union.adjusted(-MARGIN, -MARGIN, MARGIN, MARGIN)
         self.setGeometry(union)
         self.mascot.move(mascot_rect.topLeft() - union.topLeft())
-        self.bubble.move(bubble_rect.topLeft() - union.topLeft())
+        if badge_rect is not None:
+            self.usage_badge.move(badge_rect.topLeft() - union.topLeft())
+        if bubble_rect is not None:
+            self.bubble.move(bubble_rect.topLeft() - union.topLeft())
 
     # -- visibilidade -----------------------------------------------------------
     def set_visible_animated(self, visible: bool) -> None:
