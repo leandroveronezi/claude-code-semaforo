@@ -174,6 +174,7 @@ class _SessionColumn(QWidget):
         # luzes criadas primeiro pra saber a largura antes de fixar o título
         self.lights = LightColumn(session_id, status, parent=self)
         self.lights.set_style(indicator_style)
+        self.lights.set_opacity(opacity)
 
         self.title = _TitleLabel(self.lights.width(), self)
         self.title.set_text(label)
@@ -194,6 +195,7 @@ class _SessionColumn(QWidget):
         if opacity == self._opacity:
             return
         self._opacity = opacity
+        self.lights.set_opacity(opacity)
         self.update()
 
     def paintEvent(self, event) -> None:

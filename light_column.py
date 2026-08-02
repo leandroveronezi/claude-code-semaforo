@@ -96,6 +96,20 @@ def _format_tokens(tokens: int) -> str:
     return str(tokens)
 
 
+def _with_alpha_factor(color: QColor, factor: float) -> QColor:
+    """Cópia de `color` com o canal alpha escalado por `factor` (0-1) — usada
+    para aplicar a opacidade configurável do painel (ver
+    SemaphorePanel.set_panel_opacity) aos elementos "estruturais" da coluna
+    (cápsula das luzes, trilho/borda da barra de uso, divisor), que por
+    padrão têm alpha fixo e por isso destoavam (ficavam praticamente opacos)
+    quando o resto do painel era configurado bem translúcido. As cores das
+    luzes acesas ficam de fora de propósito: são o sinal em si, não estrutura
+    decorativa, e devem continuar vívidas em qualquer opacidade."""
+    scaled = QColor(color)
+    scaled.setAlpha(round(color.alpha() * factor))
+    return scaled
+
+
 def _lerp_color(start: QColor, end: QColor, ratio: float) -> QColor:
     ratio = max(0.0, min(ratio, 1.0))
     return QColor(
@@ -114,6 +128,7 @@ class LightColumn(QWidget):
         self.usage_enabled = True
         self.thresholds: list[tuple[int, QColor]] = list(DEFAULT_USAGE_THRESHOLDS)
         self.style = STYLE_SEMAPHORE
+        self._opacity = 1.0
 
         # deixa os cliques passarem direto para o painel (arrastar funciona em qualquer ponto)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -159,6 +174,12 @@ class LightColumn(QWidget):
         parsed = [(tokens, QColor(color)) for tokens, color in thresholds]
         parsed.sort(key=lambda t: t[0])
         self.thresholds = parsed or list(DEFAULT_USAGE_THRESHOLDS)
+        self.update()
+
+    def set_opacity(self, opacity: float) -> None:
+        if opacity == self._opacity:
+            return
+        self._opacity = opacity
         self.update()
 
     def _usage_color_and_ratio(self) -> tuple[QColor, float] | None:
@@ -260,14 +281,14 @@ class LightColumn(QWidget):
         x = cx - LIGHT_TRACK_WIDTH / 2
         y = top - LIGHT_TRACK_PADDING
         height = STACK_HEIGHT + 2 * LIGHT_TRACK_PADDING
-        painter.setPen(QPen(USAGE_BAR_BORDER_COLOR, 1))
-        painter.setBrush(USAGE_BAR_TRACK_COLOR)
+        painter.setPen(QPen(_with_alpha_factor(USAGE_BAR_BORDER_COLOR, self._opacity), 1))
+        painter.setBrush(_with_alpha_factor(USAGE_BAR_TRACK_COLOR, self._opacity))
         painter.drawRoundedRect(
             QRectF(x, y, LIGHT_TRACK_WIDTH, height), LIGHT_TRACK_WIDTH / 2, LIGHT_TRACK_WIDTH / 2
         )
 
     def _draw_divider(self, painter: QPainter, top: float, height: float) -> None:
-        painter.setPen(QPen(DIVIDER_COLOR, 1))
+        painter.setPen(QPen(_with_alpha_factor(DIVIDER_COLOR, self._opacity), 1))
         painter.drawLine(QPointF(LEFT_COL_WIDTH, top), QPointF(LEFT_COL_WIDTH, top + height))
 
     def _bar_x(self) -> float:
@@ -275,8 +296,8 @@ class LightColumn(QWidget):
 
     def _draw_usage_bar(self, painter: QPainter, top: float, height: float) -> None:
         x = self._bar_x()
-        painter.setPen(QPen(USAGE_BAR_BORDER_COLOR, 1))
-        painter.setBrush(USAGE_BAR_TRACK_COLOR)
+        painter.setPen(QPen(_with_alpha_factor(USAGE_BAR_BORDER_COLOR, self._opacity), 1))
+        painter.setBrush(_with_alpha_factor(USAGE_BAR_TRACK_COLOR, self._opacity))
         painter.drawRoundedRect(
             int(x), int(top), USAGE_BAR_WIDTH, int(height), USAGE_BAR_WIDTH / 2, USAGE_BAR_WIDTH / 2
         )
@@ -346,8 +367,8 @@ class LightColumn(QWidget):
         text_width = QFontMetrics(font).horizontalAdvance(text)
         bar_width = self.width() - bar_x - DOT_STYLE_TEXT_GAP - text_width - DOT_STYLE_PADDING
 
-        painter.setPen(QPen(USAGE_BAR_BORDER_COLOR, 1))
-        painter.setBrush(USAGE_BAR_TRACK_COLOR)
+        painter.setPen(QPen(_with_alpha_factor(USAGE_BAR_BORDER_COLOR, self._opacity), 1))
+        painter.setBrush(_with_alpha_factor(USAGE_BAR_TRACK_COLOR, self._opacity))
         painter.drawRoundedRect(
             QRectF(bar_x, bar_top, bar_width, bar_height), bar_height / 2, bar_height / 2
         )
@@ -378,7 +399,7 @@ class LightColumn(QWidget):
 
         # bisel escuro por trás de toda luz, ativa ou não, para lembrar a lente de um semáforo real
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(BEZEL_COLOR)
+        painter.setBrush(_with_alpha_factor(BEZEL_COLOR, self._opacity))
         painter.drawEllipse(QPoint(int(cx), int(cy)), int(radius + 2), int(radius + 2))
 
         if active:
