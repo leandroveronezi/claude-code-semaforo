@@ -28,6 +28,7 @@ from semaphore_panel import SemaphorePanel
 from settings_dialog import SettingsDialog
 from status_store import read_status, remove_status, sessions_dir, write_status
 from update_checker import fetch_latest_release, is_newer
+from version import __version__
 
 logger = setup_logging("semaforo", "semaforo.log")
 
@@ -651,10 +652,17 @@ class SessionManager:
         sessões abrindo/fechando repetidas vezes ao longo do dia não gerarem
         uma consulta a cada vez."""
         if self._update_check_thread is not None:
+            logger.debug("Verificação de nova versão já em andamento, ignorando novo gatilho")
             return
         since_last = time.time() - self._update_check_last_attempt
         if since_last < UPDATE_CHECK_MIN_INTERVAL_SECONDS:
+            logger.info(
+                "Verificação de nova versão pulada (debounce): última tentativa há %.0fs, "
+                "só libera de novo após %ds",
+                since_last, UPDATE_CHECK_MIN_INTERVAL_SECONDS,
+            )
             return
+        logger.info("Verificando nova versão no GitHub (versão local em execução: %s)", __version__)
         self._update_check_last_attempt = time.time()
         thread = _UpdateCheckThread()
         thread.finished_with_data.connect(self._on_update_check_result)
@@ -672,9 +680,13 @@ class SessionManager:
 
     def _on_update_check_result(self, data: "dict | None") -> None:
         if not data:
+            logger.info("Verificação de nova versão não obteve resposta do GitHub (ver falha logada em update_checker)")
             return
         tag = data["tag"]
         if tag == self.config.last_notified_release or not is_newer(tag):
+            logger.info(
+                "Verificação de nova versão concluída: última release no GitHub é %s, nada novo pra avisar", tag
+            )
             return
         logger.info("Nova versão disponível: %s", tag)
         text = f"🎉 Versão {tag} disponível — dê um git pull pra atualizar"
