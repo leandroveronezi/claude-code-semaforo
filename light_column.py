@@ -305,12 +305,14 @@ class LightColumn(QWidget):
         # QPainter não tem nativamente, aqui achatadas num pill retangular
         # em vez de um círculo.
         painter.setPen(Qt.PenStyle.NoPen)
-        for outset, alpha in ((5.0, 45), (2.5, 90)):
+        for outset, alpha in ((2.5, 25), (1.2, 45)):
             glow = QColor(color)
             glow.setAlpha(alpha)
             painter.setBrush(glow)
             w = width + 2 * outset
-            painter.drawRoundedRect(QRectF(x - outset, y - outset, w, height + 2 * outset), w / 2, w / 2)
+            h = height + 2 * outset
+            radius = min(w, h) / 2  # pill acompanha o lado curto, funciona pra barra vertical e horizontal
+            painter.drawRoundedRect(QRectF(x - outset, y - outset, w, h), radius, radius)
 
     def _draw_usage_text(self, painter: QPainter, top: float, height: float) -> None:
         color_and_ratio = self._usage_color_and_ratio()
@@ -357,6 +359,8 @@ class LightColumn(QWidget):
         gradient = self._usage_gradient_horizontal(bar_x, bar_width, bar_top + bar_height / 2)
         if gradient is not None:
             filled = bar_width * ratio
+            if filled > 0:
+                self._draw_bar_glow(painter, bar_x, bar_top, filled, bar_height, color)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(gradient)
             painter.drawRoundedRect(
