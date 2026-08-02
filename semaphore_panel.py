@@ -2,7 +2,17 @@
 compacto por sessão, lado a lado (em vez de abrir uma janela separada para
 cada uma). O mascote é único e vive à parte, em mascot_overlay.py."""
 from PyQt6.QtCore import QEasingCurve, QEvent, QPoint, QSize, Qt, QTimer, QVariantAnimation, pyqtSignal
-from PyQt6.QtGui import QColor, QCursor, QFont, QFontMetrics, QGuiApplication, QLinearGradient, QPainter, QPen
+from PyQt6.QtGui import (
+    QColor,
+    QCursor,
+    QFont,
+    QFontMetrics,
+    QGuiApplication,
+    QLinearGradient,
+    QPainter,
+    QPalette,
+    QPen,
+)
 from PyQt6.QtWidgets import QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from config import DEFAULT_PANEL_OPACITY_PERCENT, MIN_PANEL_OPACITY_PERCENT
@@ -144,8 +154,15 @@ class _TitleLabel(QLabel):
         self.setText(metrics.elidedText(text, Qt.TextElideMode.ElideRight, self.width()))
 
     def set_status_color(self, status: str) -> None:
+        # usa QPalette em vez de setStyleSheet: qualquer stylesheet aplicado
+        # a um QLabel ativa o motor de estilos do Qt (QStyleSheetStyle), que
+        # passa a pintar um retângulo de fundo opaco do tamanho do label —
+        # aparecendo como um "quadrado" mais escuro sobre o card
+        # semi-transparente desenhado em _SessionColumn.paintEvent.
         color = LIGHT_COLORS.get(status, LIGHT_COLORS["idle"])
-        self.setStyleSheet(f"color: {color.name()};")
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.WindowText, color)
+        self.setPalette(palette)
 
 
 class _SessionColumn(QWidget):
