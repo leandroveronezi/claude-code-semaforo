@@ -16,12 +16,20 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from foreground import ancestor_pids  # noqa: E402
+from logging_setup import setup_logging  # noqa: E402
 from status_store import remove_status, update_usage, write_status  # noqa: E402
+
+# arquivo separado do log do app (semaforo.log): o hook roda como processo
+# curto a cada evento do Claude Code, então um problema aqui (ex.: instalação
+# quebrada, permissão de escrita) pode gerar muito mais entradas que o app em
+# si — mantê-los apartados evita que um afogue o outro dentro do teto de
+# rotação.
+logger = setup_logging("semaforo.hooks", "hooks.log")
 
 # eventos em que vale a pena montar uma mensagem pro balão de fala do
 # mascote; nos demais (ex.: cada PreToolUse) isso rodaria a cada chamada de
 # ferramenta à toa, então só limpamos o balão.
-MESSAGE_EVENTS = {"Stop", "Notification", "PermissionRequest"}
+MESSAGE_EVENTS = {"Stop", "Notification", "PermissionRequest", "StopFailure"}
 TRANSCRIPT_SCAN_LINES = 50
 # pequena folga antes de ler o transcript no Stop: a última mensagem do
 # assistente pode ainda não ter sido gravada em disco no instante exato em
@@ -161,6 +169,29 @@ def _pending_request_text(payload: dict) -> str | None:
     return None
 
 
+def _stop_failure_text(payload: dict) -> str | None:
+    """Melhor esforço pra extrair o texto de erro do StopFailure (ex.: rate
+    limit / cota de sessão estourada — é esse evento que dispara quando o
+    turno termina por erro de API). O schema exato desse campo não está
+    documentado de forma confiável, então tentamos os nomes mais prováveis e
+    logamos o payload cru (só nesse evento, raro) pra confirmar o formato
+    real assim que ele ocorrer de novo, em vez de arriscar um campo errado
+    silenciosamente pra sempre."""
+    logger.info("Payload StopFailure (schema de erro não confirmado): %s", json.dumps(payload, ensure_ascii=False)[:2000])
+    error = payload.get("error")
+    if isinstance(error, dict):
+        text = error.get("message") or error.get("details")
+        if text:
+            return text
+    elif isinstance(error, str) and error:
+        return error
+    for key in ("error_details", "error_message", "reason", "message"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
 def main() -> None:
     # account_usage.py dispara um claude real (num pty) só pra ler /usage;
     # sem essa saída antecipada, essa sessão descartável apareceria como uma
@@ -191,6 +222,8 @@ def main() -> None:
         if event in MESSAGE_EVENTS:
             if event in ("Notification", "PermissionRequest"):
                 message = _pending_request_text(payload) or _last_assistant_text(payload.get("transcript_path"))
+            elif event == "StopFailure":
+                message = _stop_failure_text(payload) or _last_assistant_text(payload.get("transcript_path"))
             else:
                 message = _last_assistant_text(payload.get("transcript_path"), delay=STOP_READ_DELAY_SECONDS)
         activity = _activity_for(payload)
@@ -209,4 +242,12 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # o comando do hook (hooks/install.py) termina em `|| true` de propósito
+    # (ver CLAUDE.md) pra nunca bloquear o Claude Code — mas isso também
+    # engolia qualquer traceback em silêncio total. Logamos antes de sair
+    # com erro, pra sobrar rastro sem mudar esse contrato.
+    try:
+        main()
+    except Exception:
+        logger.exception("Falha não tratada no hook (args=%s)", sys.argv[1:])
+        sys.exit(1)

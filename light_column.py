@@ -2,8 +2,8 @@
 import math
 import time
 
-from PyQt6.QtCore import QPoint, QRectF, Qt, QTimer
-from PyQt6.QtGui import QColor, QFont, QPainter, QRadialGradient
+from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer
+from PyQt6.QtGui import QColor, QFont, QLinearGradient, QPainter, QRadialGradient
 from PyQt6.QtWidgets import QWidget
 
 COLUMN_WIDTH = 72  # alinhado com MASCOT_WIDTH em mascot.py
@@ -49,6 +49,15 @@ def _format_tokens(tokens: int) -> str:
     if tokens >= 1000:
         return f"{round(tokens / 1000)}k"
     return str(tokens)
+
+
+def _lerp_color(start: QColor, end: QColor, ratio: float) -> QColor:
+    ratio = max(0.0, min(ratio, 1.0))
+    return QColor(
+        round(start.red() + (end.red() - start.red()) * ratio),
+        round(start.green() + (end.green() - start.green()) * ratio),
+        round(start.blue() + (end.blue() - start.blue()) * ratio),
+    )
 
 
 class LightColumn(QWidget):
@@ -106,6 +115,30 @@ class LightColumn(QWidget):
                 break
         return color, ratio
 
+    def _usage_gradient(self, x: float, top: float, height: float) -> QLinearGradient | None:
+        # cada limiar (value, color) marca onde `color` TERMINA e a próxima cor
+        # começa (ex.: (100_000, verde) = verde vale até 100k; a partir dali é
+        # a cor do próximo limiar) — mesma regra usada em _usage_color_and_ratio
+        # pro número. Por isso a parada de gradiente NAQUELA posição usa a cor
+        # do PRÓXIMO limiar, não a dele mesmo: assim o trecho de 0 a 100k já vai
+        # transicionando de verde pra amarelo, chegando no amarelo cheio bem em
+        # cima dos 100k (33% de um teto de 300k) — coerente com o número, que
+        # também vira amarelo exatamente aí.
+        if not self.thresholds:
+            return None
+        max_value = self.thresholds[-1][0]
+        gradient = QLinearGradient(QPointF(x, top + height), QPointF(x, top))  # base=0 -> topo=máximo
+        if max_value <= 0:
+            gradient.setColorAt(0.0, self.thresholds[0][1])
+            gradient.setColorAt(1.0, self.thresholds[-1][1])
+            return gradient
+        gradient.setColorAt(0.0, self.thresholds[0][1])
+        last_index = len(self.thresholds) - 1
+        for i, (value, color) in enumerate(self.thresholds):
+            next_color = self.thresholds[i + 1][1] if i < last_index else color
+            gradient.setColorAt(max(0.0, min(value / max_value, 1.0)), next_color)
+        return gradient
+
     def _sync_pulse_timer(self) -> None:
         if self.status == "working":
             if not self._pulse_timer.isActive():
@@ -143,9 +176,12 @@ class LightColumn(QWidget):
         color_and_ratio = self._usage_color_and_ratio()
         if color_and_ratio is None:
             return
-        color, ratio = color_and_ratio
+        _color, ratio = color_and_ratio
+        gradient = self._usage_gradient(x, top, height)
+        if gradient is None:
+            return
         filled = height * ratio
-        painter.setBrush(color)
+        painter.setBrush(gradient)
         painter.drawRoundedRect(
             int(x), int(top + height - filled), USAGE_BAR_WIDTH, int(filled),
             USAGE_BAR_WIDTH / 2, USAGE_BAR_WIDTH / 2,

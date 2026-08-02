@@ -17,7 +17,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from logging_setup import setup_logging  # noqa: E402
 from status_store import update_usage  # noqa: E402
+
+logger = setup_logging("semaforo.hooks", "hooks.log")
 
 
 def _render_statusline(payload: dict, context_window: dict, cost: dict) -> str:
@@ -69,4 +72,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        logger.exception("Falha não tratada no statusLine hook")

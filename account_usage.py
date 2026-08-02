@@ -31,6 +31,10 @@ from zoneinfo import ZoneInfo
 
 import pyte
 
+from logging_setup import setup_logging
+
+logger = setup_logging("semaforo", "semaforo.log")
+
 PROJECT_DIR = Path(__file__).resolve().parent
 CLAUDE_BIN_FALLBACK = Path.home() / ".local" / "bin" / "claude"
 # último resultado bem-sucedido, pra mostrar algo de imediato ao abrir o app
@@ -74,14 +78,23 @@ WEEK_RE = re.compile(r"Current week.*\n[^\n]*?(?P<pct>\d+)% used\s*\n\s*Resets (
 # é sempre o último parêntese da string, então buscar a partir do fim evita
 # qualquer ambiguidade com outros parênteses que a tela venha a ter.
 _RESET_TZ_RE = re.compile(r"\(([^)]+)\)\s*$")
-# ordem importa: tenta primeiro com data (semana), depois só hora (sessão);
-# dentro de cada um, tenta com minutos antes de sem minutos ("12pm" sem :00).
-_RESET_TIME_FORMATS = (
-    ("%b %d, %I:%M%p", True),
-    ("%b %d, %I%p", True),
-    ("%I:%M%p", False),
-    ("%I%p", False),
+# NÃO usar datetime.strptime com %b/%p aqui: os dois são sensíveis ao locale
+# do processo (nomes de mês, designadores AM/PM), e o Qt muda o locale global
+# (LC_TIME) pro do sistema assim que QApplication() é instanciado — em pt_BR
+# isso quebra o parsing de "Aug"/"pm" de forma totalmente silenciosa
+# (parse_reset_datetime só devolve None, sem erro nenhum). O texto vem sempre
+# em inglês da própria tela do CLI, então parseamos à mão em vez de depender
+# do locale do processo pra interpretá-lo.
+_RESET_TIME_RE = re.compile(
+    r"^(?:(?P<month>[A-Za-z]{3}) (?P<day>\d{1,2}), )?"
+    r"(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?(?P<ampm>[AaPp][Mm])$"
 )
+_MONTH_ABBR = {
+    name: i + 1
+    for i, name in enumerate(
+        ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+    )
+}
 
 
 def load_cached_usage() -> dict | None:
@@ -169,24 +182,32 @@ def parse_reset_datetime(reset_text: str, now: datetime | None = None) -> dateti
     body = reset_text[: tz_match.start()].strip()
     now = now.astimezone(tz) if now else datetime.now(tz)
 
-    for fmt, has_date in _RESET_TIME_FORMATS:
-        try:
-            parsed = datetime.strptime(body, fmt)
-        except ValueError:
-            continue
-        if has_date:
-            # sem ano no texto: assume o ano corrente, e só empurra pro
-            # próximo ano se isso colocar a data claramente no passado (a
-            # janela de 7 dias nunca reseta a mais de 7 dias daqui).
-            result = parsed.replace(year=now.year, tzinfo=tz)
-            if result < now - timedelta(days=1):
-                result = result.replace(year=now.year + 1)
-        else:
-            result = now.replace(hour=parsed.hour, minute=parsed.minute, second=0, microsecond=0)
-            if result <= now:
-                result += timedelta(days=1)
-        return result
-    return None
+    match = _RESET_TIME_RE.match(body)
+    if not match:
+        return None
+    hour = int(match["hour"]) % 12
+    if match["ampm"].lower() == "pm":
+        hour += 12
+    minute = int(match["minute"]) if match["minute"] else 0
+
+    if match["month"]:
+        month = _MONTH_ABBR.get(match["month"].lower())
+        if month is None:
+            return None
+        # sem ano no texto: assume o ano corrente, e só empurra pro
+        # próximo ano se isso colocar a data claramente no passado (a
+        # janela de 7 dias nunca reseta a mais de 7 dias daqui).
+        result = now.replace(
+            year=now.year, month=month, day=int(match["day"]),
+            hour=hour, minute=minute, second=0, microsecond=0,
+        )
+        if result < now - timedelta(days=1):
+            result = result.replace(year=now.year + 1)
+    else:
+        result = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if result <= now:
+            result += timedelta(days=1)
+    return result
 
 
 def fetch_account_usage() -> dict | None:
@@ -195,6 +216,7 @@ def fetch_account_usage() -> dict | None:
     é sempre best-effort, nunca deve derrubar quem chamou."""
     claude_bin = _claude_bin()
     if claude_bin is None:
+        logger.debug("Binário 'claude' não encontrado; pulando consulta de cota")
         return None
 
     screen = pyte.Screen(COLS, ROWS)
@@ -222,8 +244,13 @@ def fetch_account_usage() -> dict | None:
         while (not result or "session_pct" not in result) and time.time() < deadline:
             _read_into(fd, stream, USAGE_SCREEN_POLL_INTERVAL_SECONDS)
             result = _parse_usage_screen("\n".join(screen.display))
+        if not result:
+            logger.warning("Tela de /usage não teve o formato esperado dentro do tempo limite")
+        elif "session_pct" not in result:
+            logger.debug("Consulta de cota voltou sem session_pct (throttling conhecido)")
         return result
     except OSError:
+        logger.warning("Falha de E/S ao consultar cota da conta (pty)", exc_info=True)
         return None
     finally:
         _terminate(pid, fd)
