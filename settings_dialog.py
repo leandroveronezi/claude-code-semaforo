@@ -429,6 +429,11 @@ class SettingsDialog(QDialog):
 
         card, card_layout = self._section("Comportamento")
 
+        self._semaphore_panel_enabled_check = QCheckBox("Mostrar painel do semáforo", self)
+        self._semaphore_panel_enabled_check.setChecked(config.semaphore_panel_enabled)
+        self._semaphore_panel_enabled_check.toggled.connect(self._on_semaphore_panel_enabled_toggled)
+        card_layout.addWidget(self._semaphore_panel_enabled_check)
+
         self._mascot_enabled_check = QCheckBox("Mostrar mascote", self)
         self._mascot_enabled_check.setChecked(config.mascot_enabled)
         self._mascot_enabled_check.toggled.connect(self._on_mascot_enabled_toggled)
@@ -443,6 +448,13 @@ class SettingsDialog(QDialog):
         self._account_usage_badge_check.setChecked(config.account_usage_badge_enabled)
         self._account_usage_badge_check.toggled.connect(self._on_account_usage_badge_toggled)
         card_layout.addWidget(self._account_usage_badge_check)
+
+        self._tray_tooltip_fallback_check = QCheckBox(
+            "Com o mascote desligado, mostrar notificações no tooltip da bandeja", self
+        )
+        self._tray_tooltip_fallback_check.setChecked(config.tray_tooltip_fallback_enabled)
+        self._tray_tooltip_fallback_check.toggled.connect(self._on_tray_tooltip_fallback_toggled)
+        card_layout.addWidget(self._tray_tooltip_fallback_check)
 
         card_layout.addLayout(self._build_percent_row(
             "Tamanho do mascote", config.mascot_scale, self._on_mascot_scale_changed
@@ -501,10 +513,23 @@ class SettingsDialog(QDialog):
 
     # -- aba: cota da conta (sessão 5h / semana 7d) -------------------------
     def _build_account_quota_tab(self) -> QWidget:
+        config = self._config
         tab = QWidget(self)
         layout = QVBoxLayout(tab)
         layout.setSpacing(14)
         layout.setContentsMargins(4, 12, 4, 4)
+
+        poll_card, poll_layout = self._section("Consulta")
+        hint = QLabel(
+            "Só roda enquanto há sessão monitorada aberta (nenhuma sessão = sem consulta):", self
+        )
+        hint.setObjectName("hint")
+        poll_layout.addWidget(hint)
+        poll_layout.addLayout(self._build_minutes_row(
+            "Consultar cota a cada", config.account_usage_poll_minutes, self._on_account_usage_poll_minutes_changed
+        ))
+        layout.addWidget(poll_card)
+
         layout.addWidget(self._build_pct_alert_section(
             "session", "Avisos de cota — Sessão (5h)",
             self._config.session_pct_alert_thresholds, self._config.session_pct_alert_reset_margin,
@@ -543,6 +568,19 @@ class SettingsDialog(QDialog):
 
         return card
 
+    def _build_minutes_row(self, label_text: str, value: int, on_change: Callable[[int], None]) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addWidget(QLabel(label_text, self))
+        row.addStretch(1)
+        spin = QSpinBox(self)
+        spin.setRange(1, 60)
+        spin.setSingleStep(1)
+        spin.setSuffix(" min")
+        spin.setValue(value)
+        spin.valueChanged.connect(on_change)
+        row.addWidget(spin)
+        return row
+
     def _build_percent_margin_row(self, label_text: str, value: int, on_change: Callable[[int], None]) -> QHBoxLayout:
         row = QHBoxLayout()
         row.addWidget(QLabel(label_text, self))
@@ -580,6 +618,10 @@ class SettingsDialog(QDialog):
             self._config.session_pct_alert_thresholds = values
         else:
             self._config.week_pct_alert_thresholds = values
+        self._emit_change()
+
+    def _on_account_usage_poll_minutes_changed(self, value: int) -> None:
+        self._config.account_usage_poll_minutes = value
         self._emit_change()
 
     def _on_pct_alert_margin_changed(self, key: str, value: int) -> None:
@@ -793,6 +835,10 @@ class SettingsDialog(QDialog):
     def _emit_change(self) -> None:
         self._on_change(self._config)
 
+    def _on_semaphore_panel_enabled_toggled(self, checked: bool) -> None:
+        self._config.semaphore_panel_enabled = checked
+        self._emit_change()
+
     def _on_mascot_enabled_toggled(self, checked: bool) -> None:
         self._config.mascot_enabled = checked
         self._emit_change()
@@ -803,6 +849,10 @@ class SettingsDialog(QDialog):
 
     def _on_account_usage_badge_toggled(self, checked: bool) -> None:
         self._config.account_usage_badge_enabled = checked
+        self._emit_change()
+
+    def _on_tray_tooltip_fallback_toggled(self, checked: bool) -> None:
+        self._config.tray_tooltip_fallback_enabled = checked
         self._emit_change()
 
     def _on_mascot_scale_changed(self, value: int) -> None:

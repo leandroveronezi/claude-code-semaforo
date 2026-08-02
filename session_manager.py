@@ -37,18 +37,22 @@ ALERT_VOLUME_ARGS = {
     "pw-play": ["--volume=1.5"],
 }
 FALLBACK_POLL_MS = 2000  # rede de segurança, caso o watcher perca algum evento
+HIDE_GRACE_MS = 2000  # folga antes de esconder painel/mascote ao zerar sessões (ver _apply_hidden_state)
 STALE_CHECK_MS = 30_000
 STALE_ACTIVE_SECONDS = 10 * 60  # working/error parado há mais que isso -> provável sessão travada, volta a idle
 STALE_REMOVE_SECONDS = 4 * 60 * 60  # qualquer status parado há mais que isso -> sessão abandonada, remove
 STATUS_PRIORITY = ("error", "working", "idle")  # pior -> melhor, para o ícone agregado
 SETTINGS_KEY = "panel/pos"
-ACCOUNT_USAGE_POLL_MS = 5 * 60 * 1000  # rede de segurança pra quando não há Stop nenhum (usuário parado/AFK); o gatilho principal é _on_session_finished
 ACCOUNT_USAGE_FIRST_FETCH_MS = 5_000
-ACCOUNT_USAGE_MIN_INTERVAL_SECONDS = 5 * 60  # debounce global de _poll_account_usage (cobre Stop, timer de 5min e reset_requery): fetch_account_usage() spawna um claude de verdade (~15-20s) só pra ler uma tela que não muda em escala de minuto, e a Anthropic parece limitar consultas em sequência rápida (ver account_usage.py) — 60s já testava esse limite em sessões com Stops frequentes, 5min alinha com o próprio intervalo do timer de segurança (ACCOUNT_USAGE_POLL_MS) e reduz bastante o pior caso sem perder responsividade perceptível
+# intervalo do timer de segurança (Config.account_usage_poll_minutes, editável nas configurações) e o debounce
+# global de _poll_account_usage (cobre Stop, o próprio timer e reset_requery) andam juntos de propósito:
+# fetch_account_usage() spawna um claude de verdade (~15-20s) só pra ler uma tela que não muda em escala de
+# minuto, e a Anthropic parece limitar consultas em sequência rápida (ver account_usage.py) — usar o mesmo
+# valor pros dois evita que o debounce vire gargalo mais curto (ou mais largo) que o próprio timer.
 RESET_REQUERY_BUFFER_SECONDS = 30  # folga depois do horário de reset (best-effort: dá tempo do servidor rolar a janela antes de consultarmos)
 RESET_REQUERY_MAX_DELAY_SECONDS = 8 * 24 * 60 * 60  # teto de sanidade (semana nunca reseta a mais de 7 dias daqui) — protege contra um parse de data estranho agendar pra um delay absurdo
 RESET_REQUERY_RETRY_SECONDS = 60  # se já passamos do horário anunciado e ainda assim voltou 100% (servidor pode demorar um pouco pra girar a janela), tenta de novo neste intervalo curto em vez de reparsear "resets 10:10pm" e cair pro dia seguinte por engano
-RESET_REQUERY_MAX_RETRIES = 10  # ~10min de tentativas curtas antes de desistir e devolver o polling pro ciclo normal de ACCOUNT_USAGE_POLL_MS
+RESET_REQUERY_MAX_RETRIES = 10  # ~10min de tentativas curtas antes de desistir e devolver o polling pro ciclo normal (ver _account_usage_poll_ms)
 RATE_LIMIT_MESSAGE_RE = re.compile(r"hit your .*limit|rate.?limit exceeded", re.IGNORECASE)  # heurística pra reconhecer o aviso de cota estourada (ex.: "You've hit your session limit") vindo do hook StopFailure
 UPDATE_CHECK_MIN_INTERVAL_SECONDS = 6 * 60 * 60  # debounce de _poll_update_check: sessões abrindo/fechando repetidas vezes ao longo do dia não devem bater no GitHub a cada uma
 
@@ -155,6 +159,18 @@ class SessionManager:
         self.stale_timer.setInterval(STALE_CHECK_MS)
         self.stale_timer.timeout.connect(self._check_stale)
 
+        # /clear do Claude Code dispara SessionEnd (remove o arquivo da sessão
+        # atual) seguido de um SessionStart de sessão nova (session_id
+        # diferente) em bem menos de 1s. Sem essa folga, com apenas 1 sessão
+        # aberta, _sync_panel_visibility esconderia painel+mascote na hora
+        # (0 sessões) e mostraria de novo um instante depois — visível como
+        # uma "piscada" (esconde/outro, mostra/intro). Só esconde de verdade
+        # se a folga esgotar sem nenhuma sessão reaparecer.
+        self._hide_grace_timer = QTimer()
+        self._hide_grace_timer.setSingleShot(True)
+        self._hide_grace_timer.setInterval(HIDE_GRACE_MS)
+        self._hide_grace_timer.timeout.connect(self._apply_hidden_state)
+
         # cache em disco (ver account_usage.load_cached_usage): mostra o
         # último valor conhecido de imediato, em vez da caixa ficar sumida
         # até a primeira consulta real (lenta, ~5-30s) responder.
@@ -179,13 +195,13 @@ class SessionManager:
             if enabled and (cached_usage.get("week_pct") or 0) >= pct
         }
         self.account_usage_timer = QTimer()
-        self.account_usage_timer.setInterval(ACCOUNT_USAGE_POLL_MS)
+        self.account_usage_timer.setInterval(self._account_usage_poll_ms())
         self.account_usage_timer.timeout.connect(self._poll_account_usage)
 
         # agendamento único (não repetitivo): quando sessão ou semana bate
-        # 100%, os gatilhos normais (Stop, timer de 5min) ficam suspensos
+        # 100%, os gatilhos normais (Stop, timer de segurança) ficam suspensos
         # (ver `_usage_capped_until` em `_poll_account_usage`) — com a cota
-        # estourada não faz sentido gastar ~15-20s de pty a cada 5min só pra
+        # estourada não faz sentido gastar ~15-20s de pty a cada ciclo só pra
         # confirmar o óbvio, então programamos uma consulta só pra logo depois
         # do horário de reset conhecido, com retentativas curtas (ver
         # `_schedule_reset_requery`) caso o servidor demore a girar a janela.
@@ -208,6 +224,7 @@ class SessionManager:
         self.menu.aboutToShow.connect(self._rebuild_menu)
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.messageClicked.connect(self._on_update_notification_clicked)
+        self.mascot_overlay.notification_changed.connect(self._update_tray_tooltip)
 
         self._update_tray_icon("idle")
         self.tray.show()
@@ -307,8 +324,8 @@ class SessionManager:
                 if message and RATE_LIMIT_MESSAGE_RE.search(message):
                     # hook StopFailure capturou um texto de erro que parece
                     # cota estourada (ver hooks/status_hook.py) -> consulta
-                    # o /usage de verdade agora em vez de esperar até
-                    # ACCOUNT_USAGE_POLL_MS pra cravar o 100% e a hora do reset.
+                    # o /usage de verdade agora em vez de esperar o próximo
+                    # ciclo do timer de segurança pra cravar o 100% e a hora do reset.
                     self._poll_account_usage()
 
         for session_id in list(self._updated_at):
@@ -440,15 +457,20 @@ class SessionManager:
         if self._account_usage_thread is not None:
             self._account_usage_thread.wait()
 
+    def _account_usage_poll_ms(self) -> int:
+        return self.config.account_usage_poll_minutes * 60 * 1000
+
     def _poll_account_usage(self, *, forced: bool = False) -> None:
+        if not self._statuses:
+            return  # nenhuma sessão monitorada aberta: mascote/caixa de cota ficam ocultos mesmo (ver _sync_mascot_visibility), não vale gastar ~15-20s de pty pra ninguém ver
         if self._account_usage_thread is not None:
             return  # já tem uma consulta em andamento, não sobrepõe
         if not forced:
             if self._usage_capped_until and time.time() < self._usage_capped_until:
                 return  # cota já sabidamente no teto; só a consulta agendada por _schedule_reset_requery (forced=True) roda até lá
             since_last = time.time() - self._account_usage_last_attempt
-            if since_last < ACCOUNT_USAGE_MIN_INTERVAL_SECONDS:
-                return  # debounce do gatilho por Stop (ver ACCOUNT_USAGE_MIN_INTERVAL_SECONDS)
+            if since_last < self.config.account_usage_poll_minutes * 60:
+                return  # debounce do gatilho por Stop, alinhado ao intervalo do timer de segurança (ver _account_usage_poll_ms)
         self._account_usage_last_attempt = time.time()
         thread = _AccountUsageThread()
         thread.finished_with_data.connect(self._on_account_usage)
@@ -542,7 +564,7 @@ class SessionManager:
         travaria o polling por ~24h, o que já aconteceu na prática. Em vez
         disso tenta de novo em RESET_REQUERY_RETRY_SECONDS, até
         RESET_REQUERY_MAX_RETRIES vezes, antes de desistir e devolver pro
-        ciclo normal de ACCOUNT_USAGE_POLL_MS. Só recalcula do texto na
+        ciclo normal do timer de segurança (ver `_account_usage_poll_ms`). Só recalcula do texto na
         primeira vez que detecta o teto (quando ainda estamos bem antes do
         horário de reset, sem essa ambiguidade)."""
         usage = self._account_usage or {}
@@ -596,6 +618,11 @@ class SessionManager:
 
     def _update_tray_tooltip(self) -> None:
         lines = ["Semáforo de Status"]
+        if self.config.tray_tooltip_fallback_enabled and not self.mascot_overlay.character_visible():
+            notice = self.mascot_overlay.pending_notification_text()
+            if notice:
+                lines.append("")
+                lines.append(notice)
         usage = self._account_usage or {}
         session_pct = usage.get("session_pct")
         week_pct = usage.get("week_pct")
@@ -722,12 +749,22 @@ class SessionManager:
         config.save()
         self.mascot_overlay.update_config(config)
         self.panel.set_usage_config(config.usage_bar_enabled, config.usage_thresholds)
-        self._sync_mascot_visibility()
+        self.account_usage_timer.setInterval(self._account_usage_poll_ms())
+        self._sync_panel_visibility()
+        self._update_tray_tooltip()  # mascot_enabled/tray_tooltip_fallback_enabled podem ter mudado agora mesmo
         self._update_account_usage_badge()
 
+    def _set_panel_visible(self, visible: bool) -> None:
+        if self.panel.isVisible() == visible:
+            return
+        logger.info("Painel do semáforo: %s", "show" if visible else "hide")
+        self.panel.setVisible(visible)
+
     def _toggle_panel(self) -> None:
+        if not self.config.semaphore_panel_enabled:
+            return  # painel desligado nas configurações — nada a alternar por aqui
         showing = not self.panel.isVisible()
-        self.panel.setVisible(showing)
+        self._set_panel_visible(showing)
         # só conta como "escondido manualmente" se ainda há sessões — do
         # contrário isso conflitaria com o auto-hide de "sem sessões".
         self._manually_hidden = (not showing) and bool(self._statuses)
@@ -736,12 +773,21 @@ class SessionManager:
 
     def _sync_panel_visibility(self) -> None:
         if self._statuses:
-            if not self._manually_hidden:
-                self.panel.show()
-        else:
-            self.panel.hide()
-            self._manually_hidden = False
-        self._sync_mascot_visibility()
+            self._hide_grace_timer.stop()
+            if self.config.semaphore_panel_enabled and not self._manually_hidden:
+                self._set_panel_visible(True)
+            else:
+                self._set_panel_visible(False)
+            self._sync_mascot_visibility()
+        elif not self._hide_grace_timer.isActive():
+            self._hide_grace_timer.start()
+
+    def _apply_hidden_state(self) -> None:
+        if self._statuses:
+            return  # sessão reapareceu durante a folga (ex.: /clear) — nada a esconder
+        self._set_panel_visible(False)
+        self._manually_hidden = False
+        self.mascot_overlay.set_visible_animated(False)
 
     def _sync_mascot_visibility(self) -> None:
         # o mascote e a caixa de cota são independentes: desligar "Mostrar

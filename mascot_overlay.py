@@ -25,15 +25,18 @@ lado que tiver espaço na tela: acima por padrão, ao lado se o mascote
 estiver perto do topo, espelhado se estiver perto da borda direita/esquerda."""
 import math
 
-from PyQt6.QtCore import QPoint, QRect, QSettings, QSize, Qt, QTimer
+from PyQt6.QtCore import QPoint, QRect, QSettings, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QCursor, QGuiApplication
 from PyQt6.QtWidgets import QWidget
 
 from account_usage_widget import AccountUsageBadge
 from config import Config
+from logging_setup import setup_logging
 from mascot import MASCOT_HEIGHT, MASCOT_WIDTH, MascotWidget
 from speech_bubble import TAIL_HEIGHT as BUBBLE_TAIL_LENGTH
 from speech_bubble import SpeechBubble
+
+logger = setup_logging("semaforo", "semaforo.log")
 
 SETTINGS_KEY = "mascot/pos"
 MARGIN = 12  # respiro entre o conteúdo (mascote+balão+cota) e a borda da janela
@@ -58,6 +61,12 @@ IDLE_DONE_MARKER = "__idle_done__"
 
 
 class MascotOverlay(QWidget):
+    # emitido sempre que o texto de tooltip (label + mensagem do item atual da
+    # rotação/fila) muda, pra quem precisa espelhar essa notificação em outro
+    # lugar quando o personagem não está visível pra ser passado o mouse em
+    # cima (ver SessionManager._update_tray_tooltip / Config.tray_tooltip_fallback_enabled)
+    notification_changed = pyqtSignal()
+
     def __init__(self, config: Config):
         super().__init__(
             None,
@@ -169,7 +178,11 @@ class MascotOverlay(QWidget):
         """Cota da conta (Sessão 5h / Semana 7d), vinda de account_usage.py via
         SessionManager. Cresce/some a caixa abaixo do mascote conforme haja
         dado ou não — ver AccountUsageBadge.has_content."""
+        had_content = self.usage_badge.has_content
         self.usage_badge.set_usage(data)
+        has_content = self.usage_badge.has_content
+        if has_content != had_content:
+            logger.info("Caixa de cota: %s", "show" if has_content else "hide")
         self._relayout()
 
     @property
@@ -238,6 +251,14 @@ class MascotOverlay(QWidget):
                 self.setToolTip(self._tooltip_text(label, message))
                 self._current_duration_ms = self._idle_last_ms if len(self._idle_queue) == 1 else self._rotation_ms
         self._relayout()
+        self.notification_changed.emit()
+
+    def pending_notification_text(self) -> str:
+        """Texto (label + mensagem) do item atualmente em exibição na rotação/
+        fila, o mesmo conteúdo do balão/tooltip do mascote. Usado por quem
+        precisa espelhar essa notificação em outro canal quando o personagem
+        não está visível — ver `notification_changed`."""
+        return self.toolTip()
 
     def _apply_pose(self, tier: str, activity: "str | None") -> None:
         previous = self._last_pose_tier
@@ -327,30 +348,31 @@ class MascotOverlay(QWidget):
         a lógica de lado já existente (acima por padrão, ao lado perto do topo)
         — os dois nunca colidem porque o balão nunca desce abaixo do mascote.
 
-        Com o mascote desligado (config.mascot_enabled=False), ele não entra
-        no cálculo: usamos um retângulo de referência de tamanho zero na
-        própria âncora, então a caixa de cota (se houver) ocupa o lugar dele
-        em vez de deixar um vão vazio, e a janela encolhe de acordo. O balão
-        de fala some junto — não faz sentido sem o personagem pra "falar"."""
+        Com o mascote desligado (config.mascot_enabled=False), seu retângulo
+        vira só uma referência "virtual" pra caixa de cota e o balão se
+        posicionarem em relação a ele (evita que a caixa pule de lugar
+        quando o mascote entra/sai) — mas ele não entra na união que define
+        o tamanho da janela, então a caixa (se houver) ocupa o lugar dele em
+        vez de deixar um vão vazio, e a janela encolhe de acordo. O balão de
+        fala some junto — não faz sentido sem o personagem pra "falar"."""
         mascot_w, mascot_h = self._mascot_size
         mascot_rect = QRect(self._anchor, QSize(mascot_w, mascot_h))
-        ref_rect = mascot_rect if self._mascot_enabled else QRect(self._anchor, QSize(0, 0))
 
-        screen = QGuiApplication.screenAt(ref_rect.center()) or QGuiApplication.primaryScreen()
+        screen = QGuiApplication.screenAt(mascot_rect.center()) or QGuiApplication.primaryScreen()
         screen_rect = screen.availableGeometry() if screen else QRect(0, 0, 3840, 2160)
 
-        union = QRect(ref_rect)
+        union = QRect(mascot_rect) if self._mascot_enabled else None
 
         badge_rect = None
         if self.usage_badge.has_content:
             badge_size = self.usage_badge.content_size()
-            badge_y = ref_rect.bottom() + BADGE_GAP
+            badge_y = mascot_rect.bottom() + BADGE_GAP
             badge_y = min(badge_y, screen_rect.bottom() - badge_size.height())
-            badge_x = ref_rect.center().x() - badge_size.width() // 2
+            badge_x = mascot_rect.center().x() - badge_size.width() // 2
             badge_x = min(badge_x, screen_rect.right() - badge_size.width())
             badge_x = max(badge_x, screen_rect.left())
             badge_rect = QRect(QPoint(badge_x, badge_y), badge_size)
-            union = union.united(badge_rect)
+            union = badge_rect if union is None else union.united(badge_rect)
 
         bubble_rect = None
         if not self._mascot_enabled or not self.bubble.has_content:
@@ -386,6 +408,8 @@ class MascotOverlay(QWidget):
             bubble_rect = QRect(QPoint(bubble_x, bubble_y), self.bubble.size())
             union = union.united(bubble_rect)
 
+        if union is None:
+            union = QRect(self._anchor, QSize(0, 0))
         union = union.adjusted(-MARGIN, -MARGIN, MARGIN, MARGIN)
         self.setGeometry(union)
         self.mascot.move(mascot_rect.topLeft() - union.topLeft())
@@ -404,6 +428,7 @@ class MascotOverlay(QWidget):
         if visible == self._target_visible:
             return
         self._target_visible = visible
+        logger.info("Janela do mascote: %s", "show" if visible else "hide")
         if visible:
             self.show()
             self.raise_()

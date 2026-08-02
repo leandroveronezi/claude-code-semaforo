@@ -89,6 +89,7 @@ def _migrate_token_alert_row(row: list) -> list:
 class Config:
     mascot: str = DEFAULT_MASCOT
     mascot_enabled: bool = True
+    semaphore_panel_enabled: bool = True  # painel com os mini semáforos por sessão; independente do mascote/caixa de cota
     mascot_scale: int = 100  # % do tamanho original do mascote (100 = tamanho padrão/atual)
     mascot_sounds_enabled: bool = True
     alert_beep_enabled: bool = True
@@ -96,9 +97,11 @@ class Config:
     mascot_rotation_seconds: float = 4.5  # tempo de cada sessão em erro/working, e de cada item (não-último) na fila ociosa
     mascot_idle_last_seconds: float = 9.0  # tempo do último item da fila ociosa antes de tudo sumir
     mascot_message_limit: int = 150  # nº de caracteres exibidos no balão antes de truncar com "…"
+    tray_tooltip_fallback_enabled: bool = True  # com o mascote desligado (mascot_enabled=False) não sobra balão/tooltip pra ver a fila de notificações — ecoa o item atual no tooltip do ícone da bandeja
     usage_bar_enabled: bool = True
     usage_thresholds: list = field(default_factory=lambda: [row[:] for row in DEFAULT_USAGE_THRESHOLDS])
     account_usage_badge_enabled: bool = True  # caixa de cota da conta (Sessão 5h / Semana 7d) abaixo do mascote
+    account_usage_poll_minutes: int = 5  # intervalo do timer de segurança que consulta a cota (ver _account_usage_poll_ms em session_manager.py); só roda enquanto há sessão monitorada aberta
     token_alert_thresholds: list = field(default_factory=lambda: [row[:] for row in DEFAULT_TOKEN_ALERT_THRESHOLDS])
     token_alert_reset_margin: int = 20_000  # tokens abaixo do limiar pra rearmar o aviso (histerese)
     session_pct_alert_thresholds: list = field(
