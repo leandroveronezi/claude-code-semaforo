@@ -37,6 +37,23 @@ HINT_POINT_SIZE = 6.5
 Row = tuple[str, int, str]  # (rótulo, porcentagem, texto de quando reseta)
 
 
+def _lerp_color(start: QColor, end: QColor, ratio: float) -> QColor:
+    ratio = max(0.0, min(ratio, 1.0))
+    return QColor(
+        round(start.red() + (end.red() - start.red()) * ratio),
+        round(start.green() + (end.green() - start.green()) * ratio),
+        round(start.blue() + (end.blue() - start.blue()) * ratio),
+    )
+
+
+def _bar_color_at_ratio(ratio: float) -> QColor:
+    # mesmas paradas do gradiente da barra (0.0=low, 0.6=mid, 1.0=high),
+    # usado pra achar a cor "na ponta" do preenchimento atual pro glow.
+    if ratio <= 0.6:
+        return _lerp_color(BAR_COLOR_LOW, BAR_COLOR_MID, ratio / 0.6)
+    return _lerp_color(BAR_COLOR_MID, BAR_COLOR_HIGH, (ratio - 0.6) / 0.4)
+
+
 class AccountUsageBadge(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -112,6 +129,20 @@ class AccountUsageBadge(QWidget):
         self.setFixedSize(self.content_size())
         self.update()
 
+    def _draw_bar_glow(self, painter: QPainter, x: float, y: float, width: float, height: float, color: QColor) -> None:
+        # mesmo bloom sutil da barra de uso do painel do semáforo (ver
+        # light_column._draw_bar_glow): camadas concêntricas com alpha
+        # decrescente simulando um blur que o QPainter não tem nativamente.
+        painter.setPen(Qt.PenStyle.NoPen)
+        for outset, alpha in ((2.5, 25), (1.2, 45)):
+            glow = QColor(color)
+            glow.setAlpha(alpha)
+            painter.setBrush(glow)
+            w = width + 2 * outset
+            h = height + 2 * outset
+            radius = min(w, h) / 2
+            painter.drawRoundedRect(QRectF(x - outset, y - outset, w, h), radius, radius)
+
     def paintEvent(self, _event) -> None:
         if not self._rows:
             return
@@ -148,6 +179,8 @@ class AccountUsageBadge(QWidget):
             painter.drawRoundedRect(PADDING, int(bar_y), int(bar_width), BAR_HEIGHT, BAR_HEIGHT / 2, BAR_HEIGHT / 2)
             filled = bar_width * max(0, min(pct, 100)) / 100
             if filled > 0:
+                edge_color = _bar_color_at_ratio(filled / bar_width)
+                self._draw_bar_glow(painter, PADDING, bar_y, filled, BAR_HEIGHT, edge_color)
                 gradient = QLinearGradient(QPointF(PADDING, 0), QPointF(PADDING + bar_width, 0))
                 gradient.setColorAt(0.0, BAR_COLOR_LOW)
                 gradient.setColorAt(0.6, BAR_COLOR_MID)
