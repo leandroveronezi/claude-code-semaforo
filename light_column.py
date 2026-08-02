@@ -38,6 +38,13 @@ BEZEL_COLOR = QColor(0, 0, 0, 90)
 DOT_RING_COLOR = QColor(255, 255, 255, 40)  # anel da bolinha, mais claro que o preenchimento
 ORDER = ("error", "working", "idle")  # topo -> base, como um semáforo real
 
+# cápsula que envolve a pilha de 3 luzes, ecoando a trilha (pill) da barra de
+# uso ao lado — mesma cor/borda dela, pra as duas sub-colunas lerem como uma
+# família visual só (referência: mockup com os 3 dots dentro de um
+# "retângulo ovalado").
+LIGHT_TRACK_WIDTH = LIGHT_DIAMETER + 10
+LIGHT_TRACK_PADDING = LIGHT_GAP / 2 + 2  # folga entre o track e o primeiro/último dot
+
 # barra de uso acumulado de tokens, centralizada na sub-coluna à direita, com a
 # contagem desenhada direto no widget (em vez de um QLabel à parte no
 # layout) para não sobrar espaço extra quando uma sessão ainda não tem dado
@@ -228,6 +235,7 @@ class LightColumn(QWidget):
     def _paint_semaphore_style(self, painter: QPainter) -> None:
         center_x = LEFT_COL_WIDTH / 2
         top = TOP_PADDING
+        self._draw_light_track(painter, center_x, top)
         for i, name in enumerate(ORDER):
             cy = top + LIGHT_DIAMETER / 2 + i * (LIGHT_DIAMETER + LIGHT_GAP)
             self._draw_light(painter, center_x, cy, name, self.status == name)
@@ -248,6 +256,16 @@ class LightColumn(QWidget):
         if self.usage_enabled:
             self._draw_usage_row_horizontal(painter, top, DOT_STYLE_ROW_HEIGHT)
 
+    def _draw_light_track(self, painter: QPainter, cx: float, top: float) -> None:
+        x = cx - LIGHT_TRACK_WIDTH / 2
+        y = top - LIGHT_TRACK_PADDING
+        height = STACK_HEIGHT + 2 * LIGHT_TRACK_PADDING
+        painter.setPen(QPen(USAGE_BAR_BORDER_COLOR, 1))
+        painter.setBrush(USAGE_BAR_TRACK_COLOR)
+        painter.drawRoundedRect(
+            QRectF(x, y, LIGHT_TRACK_WIDTH, height), LIGHT_TRACK_WIDTH / 2, LIGHT_TRACK_WIDTH / 2
+        )
+
     def _draw_divider(self, painter: QPainter, top: float, height: float) -> None:
         painter.setPen(QPen(DIVIDER_COLOR, 1))
         painter.drawLine(QPointF(LEFT_COL_WIDTH, top), QPointF(LEFT_COL_WIDTH, top + height))
@@ -266,17 +284,33 @@ class LightColumn(QWidget):
         color_and_ratio = self._usage_color_and_ratio()
         if color_and_ratio is None:
             return
-        _color, ratio = color_and_ratio
+        color, ratio = color_and_ratio
         gradient = self._usage_gradient(x, top, height)
         if gradient is None:
             return
         filled = height * ratio
+        fill_top = top + height - filled
+        if filled > 0:
+            self._draw_bar_glow(painter, x, fill_top, USAGE_BAR_WIDTH, filled, color)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(gradient)
         painter.drawRoundedRect(
-            int(x), int(top + height - filled), USAGE_BAR_WIDTH, int(filled),
+            int(x), int(fill_top), USAGE_BAR_WIDTH, int(filled),
             USAGE_BAR_WIDTH / 2, USAGE_BAR_WIDTH / 2,
         )
+
+    def _draw_bar_glow(self, painter: QPainter, x: float, y: float, width: float, height: float, color: QColor) -> None:
+        # mesmo espírito do bloom das luzes (_draw_light): camadas
+        # concêntricas com alpha decrescente simulando um blur que o
+        # QPainter não tem nativamente, aqui achatadas num pill retangular
+        # em vez de um círculo.
+        painter.setPen(Qt.PenStyle.NoPen)
+        for outset, alpha in ((5.0, 45), (2.5, 90)):
+            glow = QColor(color)
+            glow.setAlpha(alpha)
+            painter.setBrush(glow)
+            w = width + 2 * outset
+            painter.drawRoundedRect(QRectF(x - outset, y - outset, w, height + 2 * outset), w / 2, w / 2)
 
     def _draw_usage_text(self, painter: QPainter, top: float, height: float) -> None:
         color_and_ratio = self._usage_color_and_ratio()
@@ -347,19 +381,42 @@ class LightColumn(QWidget):
             brightness = self._pulse_brightness() if self.status == "working" else 1.0
             base = LIGHT_COLORS[name]
 
-            glow = QRadialGradient(cx, cy, radius * 2.2)
-            inner = QColor(base)
-            inner.setAlphaF(0.5 * brightness)
-            outer = QColor(base)
-            outer.setAlphaF(0.0)
-            glow.setColorAt(0.0, inner)
-            glow.setColorAt(1.0, outer)
-            painter.setBrush(glow)
-            painter.drawEllipse(QPoint(int(cx), int(cy)), int(radius * 2.2), int(radius * 2.2))
+            # bloom em duas camadas: um halo largo e suave (o "vazamento" de luz
+            # na cápsula ao redor) por baixo de um segundo halo mais apertado e
+            # mais forte (a luminosidade concentrada perto do vidro), em vez de
+            # um único gradiente — dá o ar mais vívido/neon da referência sem
+            # perder a queda suave até alpha 0 na borda.
+            outer_glow = QRadialGradient(cx, cy, radius * 3.0)
+            outer_inner = QColor(base)
+            outer_inner.setAlphaF(0.30 * brightness)
+            outer_outer = QColor(base)
+            outer_outer.setAlphaF(0.0)
+            outer_glow.setColorAt(0.0, outer_inner)
+            outer_glow.setColorAt(1.0, outer_outer)
+            painter.setBrush(outer_glow)
+            painter.drawEllipse(QPoint(int(cx), int(cy)), int(radius * 3.0), int(radius * 3.0))
 
-            color = QColor(base)
-            color.setAlphaF(0.65 + 0.35 * brightness)
-            painter.setBrush(color)
+            inner_glow = QRadialGradient(cx, cy, radius * 1.7)
+            inner_inner = QColor(base)
+            inner_inner.setAlphaF(0.60 * brightness)
+            inner_outer = QColor(base)
+            inner_outer.setAlphaF(0.0)
+            inner_glow.setColorAt(0.0, inner_inner)
+            inner_glow.setColorAt(1.0, inner_outer)
+            painter.setBrush(inner_glow)
+            painter.drawEllipse(QPoint(int(cx), int(cy)), int(radius * 1.7), int(radius * 1.7))
+
+            # preenchimento da bolinha em si: gradiente radial de um núcleo
+            # clareado (não branco puro) pra cor base, em vez de fill chapado —
+            # é o que dá o ar de "esfera de vidro acesa" em vez de disco plano.
+            fill = QRadialGradient(cx - radius * 0.25, cy - radius * 0.35, radius * 1.3)
+            core = _lerp_color(base, QColor(255, 255, 255), 0.55)
+            core.setAlphaF(0.75 + 0.25 * brightness)
+            edge = QColor(base)
+            edge.setAlphaF(0.65 + 0.35 * brightness)
+            fill.setColorAt(0.0, core)
+            fill.setColorAt(1.0, edge)
+            painter.setBrush(fill)
         else:
             painter.setBrush(DIM_COLORS[name])
 
