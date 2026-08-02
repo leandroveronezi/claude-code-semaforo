@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from config import Config
+from config import Config, MIN_PANEL_OPACITY_PERCENT
 from mascot import MascotWidget, list_agents
 
 PREVIEW_SIZE = (144, 108)
@@ -447,6 +447,15 @@ class SettingsDialog(QDialog):
         style_row.addWidget(self._indicator_style_combo)
         card_layout.addLayout(style_row)
 
+        card_layout.addLayout(self._build_percent_row(
+            "Opacidade dos painéis (semáforo e cota)",
+            config.panel_opacity,
+            self._on_panel_opacity_changed,
+            min_value=MIN_PANEL_OPACITY_PERCENT,
+            max_value=100,
+            step=5,
+        ))
+
         self._mascot_enabled_check = QCheckBox("Mostrar mascote", self)
         self._mascot_enabled_check.setChecked(config.mascot_enabled)
         self._mascot_enabled_check.toggled.connect(self._on_mascot_enabled_toggled)
@@ -721,13 +730,21 @@ class SettingsDialog(QDialog):
         row.addWidget(spin)
         return row
 
-    def _build_percent_row(self, label_text: str, value: int, on_change: Callable[[int], None]) -> QHBoxLayout:
+    def _build_percent_row(
+        self,
+        label_text: str,
+        value: int,
+        on_change: Callable[[int], None],
+        min_value: int = 50,
+        max_value: int = 200,
+        step: int = 10,
+    ) -> QHBoxLayout:
         row = QHBoxLayout()
         row.addWidget(QLabel(label_text, self))
         row.addStretch(1)
         spin = QSpinBox(self)
-        spin.setRange(50, 200)
-        spin.setSingleStep(10)
+        spin.setRange(min_value, max_value)
+        spin.setSingleStep(step)
         spin.setSuffix("%")
         spin.setValue(value)
         spin.valueChanged.connect(on_change)
@@ -854,6 +871,10 @@ class SettingsDialog(QDialog):
 
     def _on_semaphore_panel_enabled_toggled(self, checked: bool) -> None:
         self._config.semaphore_panel_enabled = checked
+        self._emit_change()
+
+    def _on_panel_opacity_changed(self, value: int) -> None:
+        self._config.panel_opacity = value
         self._emit_change()
 
     def _on_mascot_enabled_toggled(self, checked: bool) -> None:

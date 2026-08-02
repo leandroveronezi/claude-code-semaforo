@@ -124,6 +124,7 @@ class SessionManager:
         self.panel.set_usage_config(
             self.config.usage_bar_enabled, self.config.usage_thresholds, self.config.session_indicator_style
         )
+        self.panel.set_panel_opacity(self.config.panel_opacity)
         self.mascot_overlay = MascotOverlay(self.config)
         self._settings_dialog: SettingsDialog | None = None
         self.settings = QSettings("SemaforoStatus", "Posicoes")
@@ -751,6 +752,7 @@ class SessionManager:
         config.save()
         self.mascot_overlay.update_config(config)
         self.panel.set_usage_config(config.usage_bar_enabled, config.usage_thresholds, config.session_indicator_style)
+        self.panel.set_panel_opacity(config.panel_opacity)
         self.account_usage_timer.setInterval(self._account_usage_poll_ms())
         self._sync_panel_visibility()
         self._update_tray_tooltip()  # mascot_enabled/tray_tooltip_fallback_enabled podem ter mudado agora mesmo

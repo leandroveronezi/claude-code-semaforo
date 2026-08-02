@@ -5,6 +5,7 @@ from PyQt6.QtCore import QEasingCurve, QEvent, QPoint, QSize, Qt, QTimer, QVaria
 from PyQt6.QtGui import QColor, QCursor, QFont, QFontMetrics, QGuiApplication, QLinearGradient, QPainter, QPen
 from PyQt6.QtWidgets import QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
+from config import DEFAULT_PANEL_OPACITY_PERCENT, MIN_PANEL_OPACITY_PERCENT
 from light_column import (
     COLUMN_WIDTH,
     CONTENT_HEIGHT,
@@ -26,7 +27,7 @@ COLUMN_SPACING = CARD_PADDING + 4
 CARD_CORNER_RADIUS = 12
 CARD_WIDTH = COLUMN_WIDTH + 2 * CARD_PADDING
 DOT_CARD_WIDTH = DOT_STYLE_WIDTH + 2 * CARD_PADDING
-CARD_BG_COLOR = QColor(37, 38, 43, 235)
+CARD_BG_RGB = (37, 38, 43)
 CARD_BORDER_COLOR = QColor(255, 255, 255, 42)
 CARD_DIVIDER_COLOR = QColor(255, 255, 255, 32)  # linha entre o título e o semáforo, dentro do card
 RESIZE_ANIMATION_MS = 160
@@ -35,6 +36,24 @@ SHADOW_MARGIN = 16  # espaço em volta do painel só para a sombra suave renderi
 CORNER_RADIUS = 16
 TOOLTIP_OFFSET = QPoint(14, 18)  # deslocamento do cursor, como o tooltip nativo
 RAISE_INTERVAL_MS = 300  # reforço periódico de empilhamento (ver _AlwaysOnTopTooltip)
+
+
+def _with_alpha_factor(color: QColor, factor: float) -> QColor:
+    """Cópia de `color` com o canal alpha escalado por `factor` (0-1), usada
+    para aplicar a opacidade configurável do painel (ver Config.panel_opacity)
+    a bordas/divisores sem alterar as constantes de cor base."""
+    scaled = QColor(color)
+    scaled.setAlpha(round(color.alpha() * factor))
+    return scaled
+
+
+def _bg_color(rgb: tuple[int, int, int], opacity: float) -> QColor:
+    """Cor de fundo (fill) pra um dado `opacity` (0-1) tratado como fração
+    real do canal alpha (255 = totalmente sólido) — não uma fração das
+    constantes de design originais, que já eram elas mesmas ~92-94%
+    translúcidas (ver DEFAULT_PANEL_OPACITY_PERCENT em config.py)."""
+    r, g, b = rgb
+    return QColor(r, g, b, round(255 * opacity))
 
 
 class _AlwaysOnTopTooltip(QLabel):
@@ -132,12 +151,21 @@ class _TitleLabel(QLabel):
 class _SessionColumn(QWidget):
     """Empilha título e semáforo de uma sessão, centralizados."""
 
-    def __init__(self, session_id: str, label: str, status: str, indicator_style: str = STYLE_SEMAPHORE, parent=None):
+    def __init__(
+        self,
+        session_id: str,
+        label: str,
+        status: str,
+        indicator_style: str = STYLE_SEMAPHORE,
+        opacity: float = 1.0,
+        parent=None,
+    ):
         super().__init__(parent)
         self.session_id = session_id
         self._label = label
         self._message: str | None = None
         self._usage: dict | None = None
+        self._opacity = opacity
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(CARD_PADDING, CARD_PADDING, CARD_PADDING, CARD_PADDING)
@@ -162,21 +190,27 @@ class _SessionColumn(QWidget):
         self.lights.set_style(indicator_style)
         self.title.set_width(self.lights.width())
 
+    def set_opacity(self, opacity: float) -> None:
+        if opacity == self._opacity:
+            return
+        self._opacity = opacity
+        self.update()
+
     def paintEvent(self, event) -> None:
         # card individual da sessão (borda + fundo levemente mais claro que o
         # painel), imitando as sub-caixas por sessão dentro do painel único
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = self.rect().adjusted(0, 0, -1, -1)
-        painter.setPen(QPen(CARD_BORDER_COLOR, 1))
-        painter.setBrush(CARD_BG_COLOR)
+        painter.setPen(QPen(_with_alpha_factor(CARD_BORDER_COLOR, self._opacity), 1))
+        painter.setBrush(_bg_color(CARD_BG_RGB, self._opacity))
         painter.drawRoundedRect(rect, CARD_CORNER_RADIUS, CARD_CORNER_RADIUS)
 
         # linha fina separando o título do semáforo, como na referência;
         # fica a CARD_PADDING abaixo do título, simétrico ao respiro acima
         # dele, para o texto ficar centralizado na faixa de cabeçalho
         divider_y = self.title.geometry().bottom() + CARD_PADDING
-        painter.setPen(QPen(CARD_DIVIDER_COLOR, 1))
+        painter.setPen(QPen(_with_alpha_factor(CARD_DIVIDER_COLOR, self._opacity), 1))
         painter.drawLine(
             QPoint(CARD_PADDING - 4, round(divider_y)), QPoint(self.width() - CARD_PADDING + 4, round(divider_y))
         )
@@ -254,6 +288,7 @@ class SemaphorePanel(QWidget):
         self._usage_enabled = True
         self._usage_thresholds: list = []
         self._indicator_style = STYLE_SEMAPHORE
+        self._opacity = DEFAULT_PANEL_OPACITY_PERCENT / 100.0
 
         # o painel em si tem um layout fixo (nunca trocado) com uma margem só
         # e um único filho: o "flow", cujo layout interno (lado a lado vs
@@ -325,6 +360,15 @@ class SemaphorePanel(QWidget):
             column.set_style(indicator_style)
         self._resize_to_content()
 
+    def set_panel_opacity(self, percent: int) -> None:
+        opacity = max(MIN_PANEL_OPACITY_PERCENT, min(100, percent)) / 100.0
+        if opacity == self._opacity:
+            return
+        self._opacity = opacity
+        for column in self._columns.values():
+            column.set_opacity(opacity)
+        self.update()
+
     def upsert_session(
         self,
         session_id: str,
@@ -335,7 +379,14 @@ class SemaphorePanel(QWidget):
     ) -> None:
         column = self._columns.get(session_id)
         if column is None:
-            column = _SessionColumn(session_id, label, status, indicator_style=self._indicator_style, parent=self)
+            column = _SessionColumn(
+                session_id,
+                label,
+                status,
+                indicator_style=self._indicator_style,
+                opacity=self._opacity,
+                parent=self,
+            )
             column.lights.set_show_usage(self._usage_enabled)
             column.lights.set_thresholds(self._usage_thresholds)
             self._flow_layout.addWidget(column)
@@ -431,13 +482,13 @@ class SemaphorePanel(QWidget):
         gradient = QLinearGradient(
             panel_rect.left(), panel_rect.top(), panel_rect.left(), panel_rect.bottom()
         )
-        gradient.setColorAt(0.0, QColor(34, 34, 39, 240))
-        gradient.setColorAt(1.0, QColor(18, 18, 22, 240))
+        gradient.setColorAt(0.0, _bg_color((34, 34, 39), self._opacity))
+        gradient.setColorAt(1.0, _bg_color((18, 18, 22), self._opacity))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(gradient)
         painter.drawRoundedRect(panel_rect, CORNER_RADIUS, CORNER_RADIUS)
 
-        painter.setPen(QColor(255, 255, 255, 18))
+        painter.setPen(_with_alpha_factor(QColor(255, 255, 255, 18), self._opacity))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRoundedRect(panel_rect.adjusted(0, 0, -1, -1), CORNER_RADIUS, CORNER_RADIUS)
 

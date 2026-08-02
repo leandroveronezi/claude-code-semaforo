@@ -8,6 +8,8 @@ from PyQt6.QtCore import QPointF, QRectF, QSize, Qt
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath
 from PyQt6.QtWidgets import QWidget
 
+from config import DEFAULT_PANEL_OPACITY_PERCENT, MIN_PANEL_OPACITY_PERCENT
+
 MIN_WIDTH = 168
 PADDING = 10
 LABEL_PCT_GAP = 12  # espaço mínimo entre "rótulo" e "pct%" na mesma linha
@@ -17,7 +19,7 @@ BAR_GAP = 3  # entre o texto "rótulo / pct" e a barra
 HINT_GAP = 2  # entre a barra e o texto de "reseta ..."
 CORNER_RADIUS = 10
 
-BACKGROUND_COLOR = QColor(24, 24, 28, 235)
+BACKGROUND_RGB = (24, 24, 28)
 BORDER_COLOR = QColor(255, 255, 255, 30)
 TRACK_COLOR = QColor(255, 255, 255, 25)
 # gradiente estilo semáforo (verde -> amarelo -> vermelho) ao longo da barra
@@ -47,11 +49,19 @@ class AccountUsageBadge(QWidget):
         self._hint_font.setPointSizeF(HINT_POINT_SIZE)
 
         self._rows: list[Row] = []
+        self._opacity = DEFAULT_PANEL_OPACITY_PERCENT / 100.0
         self.setFixedSize(0, 0)
 
     @property
     def has_content(self) -> bool:
         return bool(self._rows)
+
+    def set_opacity(self, percent: int) -> None:
+        opacity = max(MIN_PANEL_OPACITY_PERCENT, min(100, percent)) / 100.0
+        if opacity == self._opacity:
+            return
+        self._opacity = opacity
+        self.update()
 
     def content_size(self) -> QSize:
         if not self._rows:
@@ -110,8 +120,11 @@ class AccountUsageBadge(QWidget):
 
         path = QPainterPath()
         path.addRoundedRect(QRectF(0, 0, self.width(), self.height()), CORNER_RADIUS, CORNER_RADIUS)
-        painter.setPen(BORDER_COLOR)
-        painter.setBrush(BACKGROUND_COLOR)
+        border = QColor(BORDER_COLOR)
+        border.setAlpha(round(BORDER_COLOR.alpha() * self._opacity))
+        background = QColor(*BACKGROUND_RGB, round(255 * self._opacity))
+        painter.setPen(border)
+        painter.setBrush(background)
         painter.drawPath(path)
 
         label_metrics = QFontMetrics(self._font)

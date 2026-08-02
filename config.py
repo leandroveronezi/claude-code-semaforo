@@ -12,6 +12,10 @@ CONFIG_PATH = Path.home() / ".config" / "semaforo-status" / "config.yaml"
 
 DEFAULT_MASCOT = "Clippy"
 
+MIN_PANEL_OPACITY_PERCENT = 30  # abaixo disso o fundo fica ilegível contra qualquer papel de parede
+# opacidade original (hoje) do fundo da caixa de cota da conta: alpha 235/255 ≈ 92%
+DEFAULT_PANEL_OPACITY_PERCENT = 92
+
 # limiares de cor da barra de uso de tokens: [tokens_acumulados, cor_hex],
 # em ordem crescente. Acima do último valor, a barra fica cheia na última cor.
 DEFAULT_USAGE_THRESHOLDS = [
@@ -104,6 +108,11 @@ class Config:
     # "semaphore" = "Semáforo" — colunas lado a lado, cada uma com 3 luzes empilhadas + barra vertical (padrão/original);
     # "dot" = "Lista vertical" — linhas empilhadas, cada uma com bolinha (cor = status atual) + barra horizontal, mais compacto
     session_indicator_style: str = "semaphore"
+    # % de opacidade do fundo do painel do semáforo e da caixa de cota da conta
+    # (mesmo controle pros dois — ver semaphore_panel.py e account_usage_widget.py).
+    # Padrão = a transparência que a caixa de cota já tinha originalmente
+    # (fundo alpha 235/255 ≈ 92%), pra não mudar nada visualmente por default.
+    panel_opacity: int = DEFAULT_PANEL_OPACITY_PERCENT
     account_usage_badge_enabled: bool = True  # caixa de cota da conta (Sessão 5h / Semana 7d) abaixo do mascote
     account_usage_poll_minutes: int = 5  # intervalo do timer de segurança que consulta a cota (ver _account_usage_poll_ms em session_manager.py); só roda enquanto há sessão monitorada aberta
     token_alert_thresholds: list = field(default_factory=lambda: [row[:] for row in DEFAULT_TOKEN_ALERT_THRESHOLDS])

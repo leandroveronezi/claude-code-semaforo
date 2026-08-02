@@ -120,6 +120,7 @@ class MascotOverlay(QWidget):
         self.mascot = MascotWidget(config.mascot, config.mascot_sounds_enabled, self, size=self._mascot_size)
         self.mascot.setVisible(self._mascot_enabled)
         self.usage_badge = AccountUsageBadge(self)
+        self.usage_badge.set_opacity(config.panel_opacity)
 
         self._relayout()
 
@@ -451,6 +452,7 @@ class MascotOverlay(QWidget):
         self._rotation_ms = int(config.mascot_rotation_seconds * 1000)
         self._idle_last_ms = int(config.mascot_idle_last_seconds * 1000)
         self.bubble.set_char_limit(config.mascot_message_limit)
+        self.usage_badge.set_opacity(config.panel_opacity)
 
         new_size = _mascot_size_for(config.mascot_scale)
         if new_size != self._mascot_size:
