@@ -411,7 +411,19 @@ class LightColumn(QWidget):
             # mais forte (a luminosidade concentrada perto do vidro), em vez de
             # um único gradiente — dá o ar mais vívido/neon da referência sem
             # perder a queda suave até alpha 0 na borda.
-            outer_glow = QRadialGradient(cx, cy, radius * 3.0)
+            #
+            # o raio dos dois halos é limitado à menor distância até a borda do
+            # widget (em vez de um valor fixo): sem isso o gradiente radial é
+            # cortado pelo retângulo do widget antes de chegar a alpha 0, e esse
+            # corte reto aparece como uma aresta quadrada visível em volta da
+            # bolinha (bug real, reproduzido: o raio do halo foi aumentado de
+            # 2.2x pra 3.0x num commit anterior sem atualizar o padding que
+            # reserva espaço pro bloom).
+            max_glow_radius = min(cx, self.width() - cx, cy, self.height() - cy)
+            outer_radius = min(radius * 3.0, max_glow_radius)
+            inner_radius = min(radius * 1.7, max_glow_radius)
+
+            outer_glow = QRadialGradient(cx, cy, outer_radius)
             outer_inner = QColor(base)
             outer_inner.setAlphaF(0.30 * brightness)
             outer_outer = QColor(base)
@@ -419,9 +431,9 @@ class LightColumn(QWidget):
             outer_glow.setColorAt(0.0, outer_inner)
             outer_glow.setColorAt(1.0, outer_outer)
             painter.setBrush(outer_glow)
-            painter.drawEllipse(QPoint(int(cx), int(cy)), int(radius * 3.0), int(radius * 3.0))
+            painter.drawEllipse(QPoint(int(cx), int(cy)), int(outer_radius), int(outer_radius))
 
-            inner_glow = QRadialGradient(cx, cy, radius * 1.7)
+            inner_glow = QRadialGradient(cx, cy, inner_radius)
             inner_inner = QColor(base)
             inner_inner.setAlphaF(0.60 * brightness)
             inner_outer = QColor(base)
@@ -429,7 +441,7 @@ class LightColumn(QWidget):
             inner_glow.setColorAt(0.0, inner_inner)
             inner_glow.setColorAt(1.0, inner_outer)
             painter.setBrush(inner_glow)
-            painter.drawEllipse(QPoint(int(cx), int(cy)), int(radius * 1.7), int(radius * 1.7))
+            painter.drawEllipse(QPoint(int(cx), int(cy)), int(inner_radius), int(inner_radius))
 
             # preenchimento da bolinha em si: gradiente radial de um núcleo
             # clareado (não branco puro) pra cor base, em vez de fill chapado —
