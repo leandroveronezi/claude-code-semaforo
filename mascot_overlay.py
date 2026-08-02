@@ -176,6 +176,15 @@ class MascotOverlay(QWidget):
     def has_badge_content(self) -> bool:
         return self.usage_badge.has_content
 
+    def character_visible(self) -> bool:
+        """True só quando o personagem (não só a caixa de cota) está de fato
+        visível/aparecendo pro usuário agora — usado por quem precisa decidir
+        entre colocar um aviso no balão do mascote ou cair pra um canal
+        alternativo (ex.: aviso de nova versão em SessionManager). `_target_visible`
+        em vez de `isVisible()`: reflete a intenção assim que decidida, sem o
+        atraso da animação de entrada/saída (ver set_visible_animated)."""
+        return self._target_visible and self._mascot_enabled
+
     # -- motor de rotação -----------------------------------------------------------
     def _entries_for(self, tier: str) -> list[Entry]:
         if tier == "error":

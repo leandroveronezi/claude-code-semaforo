@@ -1,8 +1,10 @@
 """Descobre sessões monitoradas (um arquivo de status = um editor/aba) e
 mantém o painel único de semáforos e o ícone de bandeja sincronizados com elas."""
+import re
 import shutil
 import subprocess
 import time
+import webbrowser
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -20,10 +22,14 @@ from config import (
 )
 from foreground import active_window_pid
 from light_column import LIGHT_COLORS
+from logging_setup import setup_logging
 from mascot_overlay import MascotOverlay
 from semaphore_panel import SemaphorePanel
 from settings_dialog import SettingsDialog
 from status_store import read_status, remove_status, sessions_dir, write_status
+from update_checker import fetch_latest_release, is_newer
+
+logger = setup_logging("semaforo", "semaforo.log")
 
 ALERT_SOUND = Path(__file__).resolve().parent / "assets" / "alert.wav"
 ALERT_VOLUME_ARGS = {
@@ -41,6 +47,10 @@ ACCOUNT_USAGE_FIRST_FETCH_MS = 5_000
 ACCOUNT_USAGE_MIN_INTERVAL_SECONDS = 5 * 60  # debounce global de _poll_account_usage (cobre Stop, timer de 5min e reset_requery): fetch_account_usage() spawna um claude de verdade (~15-20s) só pra ler uma tela que não muda em escala de minuto, e a Anthropic parece limitar consultas em sequência rápida (ver account_usage.py) — 60s já testava esse limite em sessões com Stops frequentes, 5min alinha com o próprio intervalo do timer de segurança (ACCOUNT_USAGE_POLL_MS) e reduz bastante o pior caso sem perder responsividade perceptível
 RESET_REQUERY_BUFFER_SECONDS = 30  # folga depois do horário de reset (best-effort: dá tempo do servidor rolar a janela antes de consultarmos)
 RESET_REQUERY_MAX_DELAY_SECONDS = 8 * 24 * 60 * 60  # teto de sanidade (semana nunca reseta a mais de 7 dias daqui) — protege contra um parse de data estranho agendar pra um delay absurdo
+RESET_REQUERY_RETRY_SECONDS = 60  # se já passamos do horário anunciado e ainda assim voltou 100% (servidor pode demorar um pouco pra girar a janela), tenta de novo neste intervalo curto em vez de reparsear "resets 10:10pm" e cair pro dia seguinte por engano
+RESET_REQUERY_MAX_RETRIES = 10  # ~10min de tentativas curtas antes de desistir e devolver o polling pro ciclo normal de ACCOUNT_USAGE_POLL_MS
+RATE_LIMIT_MESSAGE_RE = re.compile(r"hit your .*limit|rate.?limit exceeded", re.IGNORECASE)  # heurística pra reconhecer o aviso de cota estourada (ex.: "You've hit your session limit") vindo do hook StopFailure
+UPDATE_CHECK_MIN_INTERVAL_SECONDS = 6 * 60 * 60  # debounce de _poll_update_check: sessões abrindo/fechando repetidas vezes ao longo do dia não devem bater no GitHub a cada uma
 
 
 class _AccountUsageThread(QThread):
@@ -65,6 +75,26 @@ class _AccountUsageThread(QThread):
         try:
             data = fetch_account_usage()
         except Exception:
+            logger.warning("Falha ao consultar cota da conta", exc_info=True)
+            data = None
+        self.finished_with_data.emit(data)
+
+
+class _UpdateCheckThread(QThread):
+    """Mesmo padrão (run() sobrescrito) de _AccountUsageThread, e pelo mesmo
+    motivo: evita a corrida do Qt entre finished/quit() quando o trabalho
+    conectado a started() é síncrono. Aqui o motivo prático de nem cogitar
+    moveToThread()+quit() é ainda mais claro: fetch_latest_release() é só um
+    GET HTTP (sem pty nem subprocesso), então não há exec() nenhum rodando
+    de útil na thread além do próprio run()."""
+
+    finished_with_data = pyqtSignal(object)
+
+    def run(self) -> None:
+        try:
+            data = fetch_latest_release()
+        except Exception:
+            logger.warning("Falha ao consultar última release no GitHub", exc_info=True)
             data = None
         self.finished_with_data.emit(data)
 
@@ -82,8 +112,9 @@ class SessionManager:
         self._usages: dict[str, dict | None] = {}
         self._status_since: dict[str, float] = {}  # quando o status atual começou (ordem de chegada p/ mascote)
         self._alerted_tokens: dict[str, set[int]] = {}  # limiares de contexto já disparados por sessão (ver _check_token_alerts)
-        self._alerted_session_pct: set[int] = set()  # limiares de % de cota (sessão 5h) já disparados (ver _check_account_usage_alerts)
-        self._alerted_week_pct: set[int] = set()  # limiares de % de cota (semana 7d) já disparados (ver _check_account_usage_alerts)
+        # _alerted_session_pct / _alerted_week_pct (ver _check_account_usage_alerts)
+        # são semeados mais abaixo, a partir do cache em disco, depois que
+        # self.config e self._account_usage existirem.
         self._manually_hidden = False  # usuário escondeu o painel enquanto havia sessões
         self.config = Config.load()
         self.panel.set_usage_config(self.config.usage_bar_enabled, self.config.usage_thresholds)
@@ -103,6 +134,7 @@ class SessionManager:
         # mudança de geometria pra reancorar o painel em tempo real.
         app = QGuiApplication.instance()
         app.aboutToQuit.connect(self._wait_for_account_usage_thread)
+        app.aboutToQuit.connect(self._wait_for_update_check_thread)
         app.screenAdded.connect(self._on_screen_added)
         app.screenRemoved.connect(self._on_screens_changed)
         app.primaryScreenChanged.connect(self._on_screens_changed)
@@ -134,18 +166,40 @@ class SessionManager:
         # debounce de _poll_account_usage em vez de repetir uma pergunta cuja
         # resposta a gente já tem — sem precisar de lógica extra além dessa.
         self._account_usage_last_attempt = (self._account_usage or {}).get("fetched_at") or 0.0
+        # idem pros limiares já disparados: sem isso, todo restart do app
+        # zerava `_alerted_*_pct` e reenviava o mesmo aviso de novo pro mesmo
+        # % já visto antes, mesmo sem o valor ter caído.
+        cached_usage = self._account_usage or {}
+        self._alerted_session_pct = {
+            pct for pct, _msg, enabled in self.config.session_pct_alert_thresholds
+            if enabled and (cached_usage.get("session_pct") or 0) >= pct
+        }
+        self._alerted_week_pct = {
+            pct for pct, _msg, enabled in self.config.week_pct_alert_thresholds
+            if enabled and (cached_usage.get("week_pct") or 0) >= pct
+        }
         self.account_usage_timer = QTimer()
         self.account_usage_timer.setInterval(ACCOUNT_USAGE_POLL_MS)
         self.account_usage_timer.timeout.connect(self._poll_account_usage)
 
         # agendamento único (não repetitivo): quando sessão ou semana bate
-        # 100%, os gatilhos normais (Stop, timer de 5min) já não bastam —
-        # com a cota estourada o usuário pode nem conseguir gerar novos
-        # Stops — então programamos uma consulta extra pra logo depois do
-        # horário de reset conhecido em vez de esperar o próximo tick.
+        # 100%, os gatilhos normais (Stop, timer de 5min) ficam suspensos
+        # (ver `_usage_capped_until` em `_poll_account_usage`) — com a cota
+        # estourada não faz sentido gastar ~15-20s de pty a cada 5min só pra
+        # confirmar o óbvio, então programamos uma consulta só pra logo depois
+        # do horário de reset conhecido, com retentativas curtas (ver
+        # `_schedule_reset_requery`) caso o servidor demore a girar a janela.
+        self._usage_capped_until: float | None = None
+        self._reset_requery_retries = 0
         self.reset_requery_timer = QTimer()
         self.reset_requery_timer.setSingleShot(True)
-        self.reset_requery_timer.timeout.connect(self._poll_account_usage)
+        self.reset_requery_timer.timeout.connect(lambda: self._poll_account_usage(forced=True))
+        self._schedule_reset_requery()  # cobre reabrir o app já com a cota no teto (cache carregado acima)
+
+        # -- verificação de nova versão (ver _poll_update_check) --------------
+        self._update_check_thread: _UpdateCheckThread | None = None
+        self._update_check_last_attempt = 0.0
+        self._pending_update_url: str | None = None
 
         self.tray = QSystemTrayIcon()
         self.tray.setToolTip("Semáforo de Status")
@@ -153,6 +207,7 @@ class SessionManager:
         self.tray.setContextMenu(self.menu)
         self.menu.aboutToShow.connect(self._rebuild_menu)
         self.tray.activated.connect(self._on_tray_activated)
+        self.tray.messageClicked.connect(self._on_update_notification_clicked)
 
         self._update_tray_icon("idle")
         self.tray.show()
@@ -205,6 +260,7 @@ class SessionManager:
         # via time.time()) em vez do mtime do arquivo: em algumas escritas
         # rápidas em sequência o mtime do filesystem não muda, e ficaríamos
         # sem notar a atualização.
+        had_sessions = bool(self._statuses)  # ver gatilho de _poll_update_check no fim do método
         seen = set()
         paths = list(self.directory.glob("*.json")) if self.directory.exists() else []
         for path in paths:
@@ -248,6 +304,12 @@ class SessionManager:
                 if not self._session_in_foreground(session_id):
                     self._play_alert_sound()
                     self._notify_desktop(label)
+                if message and RATE_LIMIT_MESSAGE_RE.search(message):
+                    # hook StopFailure capturou um texto de erro que parece
+                    # cota estourada (ver hooks/status_hook.py) -> consulta
+                    # o /usage de verdade agora em vez de esperar até
+                    # ACCOUNT_USAGE_POLL_MS pra cravar o 100% e a hora do reset.
+                    self._poll_account_usage()
 
         for session_id in list(self._updated_at):
             if session_id not in seen:
@@ -264,7 +326,12 @@ class SessionManager:
 
         self._update_tray_icon(self._aggregate_status())
         self._update_mascot()
-        self._sync_panel_visibility()
+        self._sync_panel_visibility()  # decide a visibilidade do mascote pra este ciclo antes do gatilho abaixo
+        if not had_sessions and self._statuses:
+            # primeira sessão surgindo (painel/mascote acabaram de "abrir")
+            # é o momento certo pra avisar sobre versão nova, não um timer
+            # solto — ver _poll_update_check.
+            self._poll_update_check()
         self._resync_watched_files(paths)
 
     def _session_in_foreground(self, session_id: str) -> bool:
@@ -296,7 +363,7 @@ class SessionManager:
                 stderr=subprocess.DEVNULL,
             )
         except OSError:
-            pass
+            logger.warning("Falha ao disparar notificação desktop (notify-send)", exc_info=True)
 
     def _check_token_alerts(self, session_id: str, label: str, total_tokens: int) -> None:
         """Dispara um aviso (balão do mascote + notificação) uma única vez por
@@ -333,6 +400,7 @@ class SessionManager:
         try:
             return message.format(**values)
         except (KeyError, IndexError, ValueError):
+            logger.warning("Mensagem de aviso de tokens mal configurada (placeholder inválido): %r", message)
             return DEFAULT_TOKEN_ALERT_MESSAGE.format(**values)
 
     def _check_stale(self) -> None:
@@ -342,8 +410,10 @@ class SessionManager:
             status = self._statuses.get(session_id, "idle")
 
             if age > STALE_REMOVE_SECONDS:
+                logger.info("Removendo sessão %s parada há %.0fs (status=%s)", session_id, age, status)
                 remove_status(session_id, self.directory)
             elif age > STALE_ACTIVE_SECONDS and status != "idle":
+                logger.info("Sessão %s parada há %.0fs em '%s' -> volta a idle", session_id, age, status)
                 write_status(session_id, "idle", self._labels.get(session_id, session_id), self.directory)
 
         self._scan()
@@ -370,12 +440,15 @@ class SessionManager:
         if self._account_usage_thread is not None:
             self._account_usage_thread.wait()
 
-    def _poll_account_usage(self) -> None:
+    def _poll_account_usage(self, *, forced: bool = False) -> None:
         if self._account_usage_thread is not None:
             return  # já tem uma consulta em andamento, não sobrepõe
-        since_last = time.time() - self._account_usage_last_attempt
-        if since_last < ACCOUNT_USAGE_MIN_INTERVAL_SECONDS:
-            return  # debounce do gatilho por Stop (ver ACCOUNT_USAGE_MIN_INTERVAL_SECONDS)
+        if not forced:
+            if self._usage_capped_until and time.time() < self._usage_capped_until:
+                return  # cota já sabidamente no teto; só a consulta agendada por _schedule_reset_requery (forced=True) roda até lá
+            since_last = time.time() - self._account_usage_last_attempt
+            if since_last < ACCOUNT_USAGE_MIN_INTERVAL_SECONDS:
+                return  # debounce do gatilho por Stop (ver ACCOUNT_USAGE_MIN_INTERVAL_SECONDS)
         self._account_usage_last_attempt = time.time()
         thread = _AccountUsageThread()
         thread.finished_with_data.connect(self._on_account_usage)
@@ -436,6 +509,7 @@ class SessionManager:
                 if pct not in fired:
                     fired.add(pct)
                     text = self._format_pct_alert(message, current_pct, resets_at, pct, default_message)
+                    logger.info("Aviso de cota disparado: limiar=%s%% atual=%s%% -> %r", pct, current_pct, text)
                     self.mascot_overlay.enqueue_idle("Cota da conta", text)
                     self._notify_desktop("Cota da conta", text, icon="dialog-information")
             elif current_pct < pct - margin:
@@ -449,26 +523,60 @@ class SessionManager:
         try:
             return message.format(**values)
         except (KeyError, IndexError, ValueError):
+            logger.warning("Mensagem de aviso de cota mal configurada (placeholder inválido): %r", message)
             return default_message.format(**values)
 
     def _schedule_reset_requery(self) -> None:
-        """Se sessão e/ou semana estiverem em 100%, agenda uma consulta
-        única pra pouco depois do horário de reset mais próximo entre as que
-        estiverem no limite — ver comentário de reset_requery_timer."""
+        """Se sessão e/ou semana estiverem em 100%, agenda uma consulta única
+        pra pouco depois do horário de reset mais próximo entre as que
+        estiverem no limite, e marca `_usage_capped_until` pra suspender o
+        polling normal até lá (ver `_poll_account_usage`). Sem nada no teto,
+        libera o polling normal de novo.
+
+        Importante: se já tínhamos uma consulta agendada (`_usage_capped_until`
+        no passado) e o valor ainda assim voltou 100%, NÃO reparseia o texto
+        "resets 10:10pm" pra recalcular o alvo — `parse_reset_datetime` sempre
+        devolve a próxima ocorrência *futura*, então reparsear depois do
+        horário anunciado empurraria pro dia seguinte por engano (servidor
+        pode só estar demorando alguns segundos/minutos pra girar a janela) e
+        travaria o polling por ~24h, o que já aconteceu na prática. Em vez
+        disso tenta de novo em RESET_REQUERY_RETRY_SECONDS, até
+        RESET_REQUERY_MAX_RETRIES vezes, antes de desistir e devolver pro
+        ciclo normal de ACCOUNT_USAGE_POLL_MS. Só recalcula do texto na
+        primeira vez que detecta o teto (quando ainda estamos bem antes do
+        horário de reset, sem essa ambiguidade)."""
         usage = self._account_usage or {}
-        targets = []
-        for pct_key, resets_key in (("session_pct", "session_resets"), ("week_pct", "week_resets")):
-            if (usage.get(pct_key) or 0) < 100:
-                continue
-            reset_at = parse_reset_datetime(usage.get(resets_key) or "")
-            if reset_at is not None:
-                targets.append(reset_at)
-        if not targets:
+        still_capped = (usage.get("session_pct") or 0) >= 100 or (usage.get("week_pct") or 0) >= 100
+        if not still_capped:
+            self._usage_capped_until = None
+            self._reset_requery_retries = 0
             return
-        target = min(targets) + timedelta(seconds=RESET_REQUERY_BUFFER_SECONDS)
-        delay_seconds = (target - datetime.now(target.tzinfo)).total_seconds()
+
+        if self._usage_capped_until is not None and time.time() >= self._usage_capped_until:
+            self._reset_requery_retries += 1
+            if self._reset_requery_retries > RESET_REQUERY_MAX_RETRIES:
+                logger.warning("Cota ainda no teto após %d tentativas pós-reset; voltando ao polling normal", RESET_REQUERY_MAX_RETRIES)
+                self._usage_capped_until = None
+                return
+            delay_seconds = float(RESET_REQUERY_RETRY_SECONDS)
+        else:
+            targets = []
+            for pct_key, resets_key in (("session_pct", "session_resets"), ("week_pct", "week_resets")):
+                if (usage.get(pct_key) or 0) < 100:
+                    continue
+                reset_at = parse_reset_datetime(usage.get(resets_key) or "")
+                if reset_at is not None:
+                    targets.append(reset_at)
+            if not targets:
+                self._usage_capped_until = None
+                return
+            target = min(targets) + timedelta(seconds=RESET_REQUERY_BUFFER_SECONDS)
+            delay_seconds = (target - datetime.now(target.tzinfo)).total_seconds()
+            self._reset_requery_retries = 0
+
         if 0 < delay_seconds <= RESET_REQUERY_MAX_DELAY_SECONDS:
             self.reset_requery_timer.start(int(delay_seconds * 1000))
+            self._usage_capped_until = time.time() + delay_seconds
 
     def _on_account_usage_thread_finished(self) -> None:
         """`finished` só é emitido depois que run() já retornou de fato (a
@@ -496,6 +604,66 @@ class SessionManager:
         if week_pct is not None:
             lines.append(f"Semana (7d): {week_pct}% · reseta {usage.get('week_resets', '?')}")
         self.tray.setToolTip("\n".join(lines))
+
+    # -- verificação de nova versão (GitHub Releases) ----------------------
+    def _wait_for_update_check_thread(self) -> None:
+        """Mesmo cuidado de `_wait_for_account_usage_thread`: sem isso, fechar
+        o app com a consulta em andamento deixaria o QThread órfão."""
+        if self._update_check_thread is not None:
+            self._update_check_thread.wait()
+
+    def _poll_update_check(self) -> None:
+        """Disparado de `_scan()` quando a primeira sessão aparece (transição
+        de 0 pra N sessões monitoradas) — é o momento em que o painel/mascote
+        acabam de "abrir" pro usuário, que é a hora que faz sentido avisar
+        sobre versão nova, em vez de um timer solto batendo no GitHub o app
+        inteiro rodando. Debounce por UPDATE_CHECK_MIN_INTERVAL_SECONDS pra
+        sessões abrindo/fechando repetidas vezes ao longo do dia não gerarem
+        uma consulta a cada vez."""
+        if self._update_check_thread is not None:
+            return
+        since_last = time.time() - self._update_check_last_attempt
+        if since_last < UPDATE_CHECK_MIN_INTERVAL_SECONDS:
+            return
+        self._update_check_last_attempt = time.time()
+        thread = _UpdateCheckThread()
+        thread.finished_with_data.connect(self._on_update_check_result)
+        thread.finished.connect(self._on_update_check_thread_finished)
+        self._update_check_thread = thread
+        thread.start()
+
+    def _on_update_check_thread_finished(self) -> None:
+        # mesmo motivo de _on_account_usage_thread_finished: só derruba a
+        # última referência Python depois que run() já retornou de fato.
+        thread = self._update_check_thread
+        self._update_check_thread = None
+        if thread is not None:
+            thread.deleteLater()
+
+    def _on_update_check_result(self, data: "dict | None") -> None:
+        if not data:
+            return
+        tag = data["tag"]
+        if tag == self.config.last_notified_release or not is_newer(tag):
+            return
+        logger.info("Nova versão disponível: %s", tag)
+        text = f"🎉 Versão {tag} disponível — dê um git pull pra atualizar"
+        self._pending_update_url = data["url"]
+        # canal único (nunca os dois): balão do mascote se ele estiver de
+        # fato visível agora, senão o balão nativo da bandeja perto do
+        # relógio — diferente dos avisos de cota/tokens, que disparam nos
+        # dois ao mesmo tempo por serem alertas acionáveis; aqui é só um
+        # aviso informativo, então duplicar seria ruído.
+        if self.mascot_overlay.character_visible():
+            self.mascot_overlay.enqueue_idle("Atualização disponível", text)
+        else:
+            self.tray.showMessage("Semáforo de Status", text, QSystemTrayIcon.MessageIcon.Information)
+        self.config.last_notified_release = tag
+        self.config.save()
+
+    def _on_update_notification_clicked(self) -> None:
+        if self._pending_update_url:
+            webbrowser.open(self._pending_update_url)
 
     # -- bandeja -----------------------------------------------------------
     def _aggregate_status(self) -> str:

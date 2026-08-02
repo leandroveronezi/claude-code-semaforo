@@ -4,6 +4,10 @@ from pathlib import Path
 
 import yaml
 
+from logging_setup import setup_logging
+
+logger = setup_logging("semaforo", "semaforo.log")
+
 CONFIG_PATH = Path.home() / ".config" / "semaforo-status" / "config.yaml"
 
 DEFAULT_MASCOT = "Clippy"
@@ -105,12 +109,16 @@ class Config:
         default_factory=lambda: [row[:] for row in DEFAULT_WEEK_PCT_ALERT_THRESHOLDS]
     )
     week_pct_alert_reset_margin: int = 10  # pontos percentuais abaixo do limiar pra rearmar o aviso (histerese)
+    last_notified_release: str = ""  # última tag de release já avisada (ver update_checker.py) — evita reavisar a mesma versão a cada restart
 
     @classmethod
     def load(cls) -> "Config":
         try:
             raw = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
+        except FileNotFoundError:
+            return cls()  # primeira execução, sem config salvo ainda -> nada de anormal
         except (OSError, yaml.YAMLError):
+            logger.warning("Config em %s inválido/ilegível; usando padrões", CONFIG_PATH, exc_info=True)
             return cls()
         known_fields = {f for f in cls.__dataclass_fields__}
         data = {k: v for k, v in raw.items() if k in known_fields}
