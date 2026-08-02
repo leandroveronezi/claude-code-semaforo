@@ -100,6 +100,10 @@ class Config:
     tray_tooltip_fallback_enabled: bool = True  # com o mascote desligado (mascot_enabled=False) não sobra balão/tooltip pra ver a fila de notificações — ecoa o item atual no tooltip do ícone da bandeja
     usage_bar_enabled: bool = True
     usage_thresholds: list = field(default_factory=lambda: [row[:] for row in DEFAULT_USAGE_THRESHOLDS])
+    # estilo do painel de sessões (nomes exibidos nas configurações entre parênteses):
+    # "semaphore" = "Semáforo" — colunas lado a lado, cada uma com 3 luzes empilhadas + barra vertical (padrão/original);
+    # "dot" = "Lista vertical" — linhas empilhadas, cada uma com bolinha (cor = status atual) + barra horizontal, mais compacto
+    session_indicator_style: str = "semaphore"
     account_usage_badge_enabled: bool = True  # caixa de cota da conta (Sessão 5h / Semana 7d) abaixo do mascote
     account_usage_poll_minutes: int = 5  # intervalo do timer de segurança que consulta a cota (ver _account_usage_poll_ms em session_manager.py); só roda enquanto há sessão monitorada aberta
     token_alert_thresholds: list = field(default_factory=lambda: [row[:] for row in DEFAULT_TOKEN_ALERT_THRESHOLDS])

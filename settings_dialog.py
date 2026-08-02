@@ -7,6 +7,7 @@ from PyQt6.QtGui import QColor, QIcon
 from PyQt6.QtWidgets import (
     QCheckBox,
     QColorDialog,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -434,6 +435,18 @@ class SettingsDialog(QDialog):
         self._semaphore_panel_enabled_check.toggled.connect(self._on_semaphore_panel_enabled_toggled)
         card_layout.addWidget(self._semaphore_panel_enabled_check)
 
+        style_row = QHBoxLayout()
+        style_row.addWidget(QLabel("Estilo do painel", self))
+        style_row.addStretch(1)
+        self._indicator_style_combo = QComboBox(self)
+        self._indicator_style_combo.addItem("Semáforo (colunas lado a lado)", "semaphore")
+        self._indicator_style_combo.addItem("Lista vertical (linhas empilhadas)", "dot")
+        index = self._indicator_style_combo.findData(config.session_indicator_style)
+        self._indicator_style_combo.setCurrentIndex(index if index >= 0 else 0)
+        self._indicator_style_combo.currentIndexChanged.connect(self._on_indicator_style_changed)
+        style_row.addWidget(self._indicator_style_combo)
+        card_layout.addLayout(style_row)
+
         self._mascot_enabled_check = QCheckBox("Mostrar mascote", self)
         self._mascot_enabled_check.setChecked(config.mascot_enabled)
         self._mascot_enabled_check.toggled.connect(self._on_mascot_enabled_toggled)
@@ -768,6 +781,10 @@ class SettingsDialog(QDialog):
 
     def _on_usage_bar_toggled(self, checked: bool) -> None:
         self._config.usage_bar_enabled = checked
+        self._emit_change()
+
+    def _on_indicator_style_changed(self, index: int) -> None:
+        self._config.session_indicator_style = self._indicator_style_combo.itemData(index)
         self._emit_change()
 
     def _build_token_alert_section(self) -> QWidget:

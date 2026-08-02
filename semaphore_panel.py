@@ -2,14 +2,33 @@
 compacto por sessão, lado a lado (em vez de abrir uma janela separada para
 cada uma). O mascote é único e vive à parte, em mascot_overlay.py."""
 from PyQt6.QtCore import QEasingCurve, QEvent, QPoint, QSize, Qt, QTimer, QVariantAnimation, pyqtSignal
-from PyQt6.QtGui import QColor, QCursor, QFont, QFontMetrics, QGuiApplication, QLinearGradient, QPainter
+from PyQt6.QtGui import QColor, QCursor, QFont, QFontMetrics, QGuiApplication, QLinearGradient, QPainter, QPen
 from PyQt6.QtWidgets import QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
-from light_column import COLUMN_WIDTH, CONTENT_HEIGHT, LIGHT_COLORS, LightColumn
+from light_column import (
+    COLUMN_WIDTH,
+    CONTENT_HEIGHT,
+    DOT_STYLE_WIDTH,
+    LIGHT_COLORS,
+    STYLE_DOT,
+    STYLE_SEMAPHORE,
+    LightColumn,
+)
 
 PADDING = 9
-COLUMN_GAP = 8
-COLUMN_SPACING = 4  # espaço vertical entre título e luzes dentro de uma sessão
+COLUMN_GAP = 8  # espaço entre luzes lado a lado, no estilo semaphore
+DOT_STYLE_CARD_GAP = 4  # espaço entre cards empilhados, no estilo dot (lista vertical)
+CARD_PADDING = 10  # respiro dentro do card de cada sessão, ao redor de título+semáforo
+# espaço entre título e luzes: CARD_PADDING abaixo do título (simétrico ao
+# respiro acima, centralizando o título na faixa de cabeçalho) + um respiro
+# menor entre a linha divisória e o semáforo
+COLUMN_SPACING = CARD_PADDING + 4
+CARD_CORNER_RADIUS = 12
+CARD_WIDTH = COLUMN_WIDTH + 2 * CARD_PADDING
+DOT_CARD_WIDTH = DOT_STYLE_WIDTH + 2 * CARD_PADDING
+CARD_BG_COLOR = QColor(37, 38, 43, 235)
+CARD_BORDER_COLOR = QColor(255, 255, 255, 42)
+CARD_DIVIDER_COLOR = QColor(255, 255, 255, 32)  # linha entre o título e o semáforo, dentro do card
 RESIZE_ANIMATION_MS = 160
 PLACEHOLDER_WIDTH = 140
 SHADOW_MARGIN = 16  # espaço em volta do painel só para a sombra suave renderizar
@@ -82,18 +101,26 @@ class _AlwaysOnTopTooltip(QLabel):
 class _TitleLabel(QLabel):
     """Nome da sessão, elidido, com a cor acompanhando o status atual."""
 
-    def __init__(self, parent=None):
+    def __init__(self, width: int, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        self.setFixedWidth(COLUMN_WIDTH)
+        self.setFixedWidth(width)
+        self._raw_text = ""
         font = self.font()
         font.setPointSize(6)
         font.setWeight(QFont.Weight.DemiBold)
         font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 102)
         self.setFont(font)
 
+    def set_width(self, width: int) -> None:
+        if width == self.width():
+            return
+        self.setFixedWidth(width)
+        self.set_text(self._raw_text)  # reelide pro novo tamanho
+
     def set_text(self, text: str) -> None:
+        self._raw_text = text
         metrics = QFontMetrics(self.font())
         self.setText(metrics.elidedText(text, Qt.TextElideMode.ElideRight, self.width()))
 
@@ -105,7 +132,7 @@ class _TitleLabel(QLabel):
 class _SessionColumn(QWidget):
     """Empilha título e semáforo de uma sessão, centralizados."""
 
-    def __init__(self, session_id: str, label: str, status: str, parent=None):
+    def __init__(self, session_id: str, label: str, status: str, indicator_style: str = STYLE_SEMAPHORE, parent=None):
         super().__init__(parent)
         self.session_id = session_id
         self._label = label
@@ -113,20 +140,49 @@ class _SessionColumn(QWidget):
         self._usage: dict | None = None
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(CARD_PADDING, CARD_PADDING, CARD_PADDING, CARD_PADDING)
         layout.setSpacing(COLUMN_SPACING)
 
-        self.title = _TitleLabel(self)
+        # luzes criadas primeiro pra saber a largura antes de fixar o título
+        self.lights = LightColumn(session_id, status, parent=self)
+        self.lights.set_style(indicator_style)
+
+        self.title = _TitleLabel(self.lights.width(), self)
         self.title.set_text(label)
         self.title.set_status_color(status)
         layout.addWidget(self.title, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        self.lights = LightColumn(session_id, status, parent=self)
         layout.addWidget(self.lights, alignment=Qt.AlignmentFlag.AlignHCenter)
 
     @property
     def status(self) -> str:
         return self.lights.status
+
+    def set_style(self, indicator_style: str) -> None:
+        self.lights.set_style(indicator_style)
+        self.title.set_width(self.lights.width())
+
+    def paintEvent(self, event) -> None:
+        # card individual da sessão (borda + fundo levemente mais claro que o
+        # painel), imitando as sub-caixas por sessão dentro do painel único
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = self.rect().adjusted(0, 0, -1, -1)
+        painter.setPen(QPen(CARD_BORDER_COLOR, 1))
+        painter.setBrush(CARD_BG_COLOR)
+        painter.drawRoundedRect(rect, CARD_CORNER_RADIUS, CARD_CORNER_RADIUS)
+
+        # linha fina separando o título do semáforo, como na referência;
+        # fica a CARD_PADDING abaixo do título, simétrico ao respiro acima
+        # dele, para o texto ficar centralizado na faixa de cabeçalho
+        divider_y = self.title.geometry().bottom() + CARD_PADDING
+        painter.setPen(QPen(CARD_DIVIDER_COLOR, 1))
+        painter.drawLine(
+            QPoint(CARD_PADDING - 4, round(divider_y)), QPoint(self.width() - CARD_PADDING + 4, round(divider_y))
+        )
+
+        painter.end()
+        super().paintEvent(event)
 
     def event(self, event) -> bool:
         # substitui o QToolTip nativo pelo nosso popup sempre-no-topo (ver
@@ -197,12 +253,22 @@ class SemaphorePanel(QWidget):
         self._drag_offset: QPoint | None = None
         self._usage_enabled = True
         self._usage_thresholds: list = []
+        self._indicator_style = STYLE_SEMAPHORE
 
-        self._layout = QHBoxLayout(self)
+        # o painel em si tem um layout fixo (nunca trocado) com uma margem só
+        # e um único filho: o "flow", cujo layout interno (lado a lado vs
+        # empilhado) é recriado do zero a cada troca de estilo — trocar o
+        # layout instalado diretamente em `self` não é seguro (ver
+        # _rebuild_layout) porque widgets Qt não permitem duas chamadas de
+        # setLayout no mesmo objeto.
+        self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(
             SHADOW_MARGIN + PADDING, SHADOW_MARGIN + PADDING, SHADOW_MARGIN + PADDING, SHADOW_MARGIN + PADDING
         )
-        self._layout.setSpacing(COLUMN_GAP)
+        self._layout.setSpacing(0)
+        self._flow: QWidget | None = None
+        self._flow_layout: QHBoxLayout | QVBoxLayout | None = None
+        self._rebuild_layout(vertical=False)
 
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(28)
@@ -212,6 +278,8 @@ class SemaphorePanel(QWidget):
 
         self._anchor_right = False
         self._resize_start_right = 0
+        self._anchor_bottom = False
+        self._resize_start_bottom = 0
 
         self._resize_animation = QVariantAnimation(self)
         self._resize_animation.setDuration(RESIZE_ANIMATION_MS)
@@ -221,12 +289,40 @@ class SemaphorePanel(QWidget):
         self._resize_to_content()
 
     # -- gerenciamento de sessões -------------------------------------------------
-    def set_usage_config(self, enabled: bool, thresholds: list) -> None:
+    def _rebuild_layout(self, vertical: bool) -> None:
+        # troca a direção do "flow" (lado a lado vs empilhado) recriando o
+        # container inteiro em vez de trocar o layout instalado nele — Qt não
+        # permite widget.setLayout() duas vezes no mesmo objeto, e uma
+        # tentativa anterior de desanexar o layout antigo pra um QWidget()
+        # descartável causava um bug real: sem nenhuma referência Python viva,
+        # esse widget temporário era coletado pelo GC quase imediatamente,
+        # destruindo em cascata os cards de sessão que tinham acabado de ser
+        # reparentados pra ele.
+        old_flow = self._flow
+        new_flow = QWidget(self)
+        new_layout = QVBoxLayout(new_flow) if vertical else QHBoxLayout(new_flow)
+        new_layout.setContentsMargins(0, 0, 0, 0)
+        new_layout.setSpacing(DOT_STYLE_CARD_GAP if vertical else COLUMN_GAP)
+        for column in self._columns.values():
+            new_layout.addWidget(column)  # reparenta automaticamente pro novo flow
+        self._flow = new_flow
+        self._flow_layout = new_layout
+        self._layout.addWidget(new_flow)
+        if old_flow is not None:
+            self._layout.removeWidget(old_flow)
+            old_flow.deleteLater()
+
+    def set_usage_config(self, enabled: bool, thresholds: list, indicator_style: str = STYLE_SEMAPHORE) -> None:
         self._usage_enabled = enabled
         self._usage_thresholds = thresholds
+        style_changed = indicator_style != self._indicator_style
+        self._indicator_style = indicator_style
+        if style_changed:
+            self._rebuild_layout(vertical=indicator_style == STYLE_DOT)
         for column in self._columns.values():
             column.lights.set_show_usage(enabled)
             column.lights.set_thresholds(thresholds)
+            column.set_style(indicator_style)
         self._resize_to_content()
 
     def upsert_session(
@@ -239,10 +335,10 @@ class SemaphorePanel(QWidget):
     ) -> None:
         column = self._columns.get(session_id)
         if column is None:
-            column = _SessionColumn(session_id, label, status, parent=self)
+            column = _SessionColumn(session_id, label, status, indicator_style=self._indicator_style, parent=self)
             column.lights.set_show_usage(self._usage_enabled)
             column.lights.set_thresholds(self._usage_thresholds)
-            self._layout.addWidget(column)
+            self._flow_layout.addWidget(column)
             self._columns[session_id] = column
         column.update_session(label, status, message, usage)
         self._resize_to_content()
@@ -251,7 +347,7 @@ class SemaphorePanel(QWidget):
         column = self._columns.pop(session_id, None)
         if column is None:
             return
-        self._layout.removeWidget(column)
+        self._flow_layout.removeWidget(column)
         column.deleteLater()
         self._resize_to_content()
 
@@ -261,8 +357,18 @@ class SemaphorePanel(QWidget):
     def _resize_to_content(self) -> None:
         if self._columns:
             count = len(self._columns)
-            width = 2 * PADDING + count * COLUMN_WIDTH + (count - 1) * COLUMN_GAP
-            height = 2 * PADDING + max(c.sizeHint().height() for c in self._columns.values())
+            if self._indicator_style == STYLE_DOT:
+                # empilhado: largura fixa (um card largo), altura cresce com o nº de sessões
+                width = 2 * PADDING + DOT_CARD_WIDTH
+                height = (
+                    2 * PADDING
+                    + sum(c.sizeHint().height() for c in self._columns.values())
+                    + (count - 1) * DOT_STYLE_CARD_GAP
+                )
+            else:
+                # lado a lado: largura cresce com o nº de sessões, altura fixa (um card)
+                width = 2 * PADDING + count * CARD_WIDTH + (count - 1) * COLUMN_GAP
+                height = 2 * PADDING + max(c.sizeHint().height() for c in self._columns.values())
         else:
             width = PLACEHOLDER_WIDTH
             height = 2 * PADDING + CONTENT_HEIGHT
@@ -276,19 +382,23 @@ class SemaphorePanel(QWidget):
         self._resize_animation.stop()
         self._anchor_right = self._is_near_right_edge()
         self._resize_start_right = self.x() + self.width()
+        self._anchor_bottom = self._is_near_bottom_edge()
+        self._resize_start_bottom = self.y() + self.height()
         self._resize_animation.setStartValue(self.size())
         self._resize_animation.setEndValue(target)
         self._resize_animation.start()
 
     def _apply_resize(self, size: QSize) -> None:
-        # por padrão o Qt cresce/encolhe mantendo o canto esquerdo fixo
-        # (setFixedSize não mexe em x/y). Se o painel estiver ancorado perto
-        # da borda direita da tela, isso faz ele "fugir" do canto ao crescer
-        # (ou descolar dele ao encolher) — por isso, nesse caso, recalculamos
-        # x pra manter a borda direita parada e crescer/encolher pra esquerda.
+        # por padrão o Qt cresce/encolhe mantendo o canto superior esquerdo
+        # fixo (setFixedSize não mexe em x/y). Se o painel estiver ancorado
+        # perto da borda direita/inferior da tela, isso faz ele "fugir" do
+        # canto ao crescer (ou descolar dele ao encolher) — por isso, nesse
+        # caso, recalculamos x/y pra manter aquela borda parada e crescer
+        # pro lado oposto (esquerda/cima).
         self.setFixedSize(size)
-        if self._anchor_right:
-            self.move(self._resize_start_right - size.width(), self.y())
+        x = self._resize_start_right - size.width() if self._anchor_right else self.x()
+        y = self._resize_start_bottom - size.height() if self._anchor_bottom else self.y()
+        self.move(x, y)
 
     def _is_near_right_edge(self) -> bool:
         screen = QGuiApplication.screenAt(self.frameGeometry().center()) or QGuiApplication.primaryScreen()
@@ -298,6 +408,15 @@ class SemaphorePanel(QWidget):
         dist_left = self.x() - bounds.left()
         dist_right = bounds.right() - (self.x() + self.width())
         return dist_right < dist_left
+
+    def _is_near_bottom_edge(self) -> bool:
+        screen = QGuiApplication.screenAt(self.frameGeometry().center()) or QGuiApplication.primaryScreen()
+        if screen is None:
+            return False
+        bounds = screen.availableGeometry()
+        dist_top = self.y() - bounds.top()
+        dist_bottom = bounds.bottom() - (self.y() + self.height())
+        return dist_bottom < dist_top
 
     def _panel_rect(self):
         return self.rect().adjusted(SHADOW_MARGIN, SHADOW_MARGIN, -SHADOW_MARGIN, -SHADOW_MARGIN)
@@ -328,19 +447,8 @@ class SemaphorePanel(QWidget):
             font.setPointSize(8)
             painter.setFont(font)
             painter.drawText(panel_rect, Qt.AlignmentFlag.AlignCenter, "Sem sessões monitoradas")
-        else:
-            self._draw_column_dividers(painter, panel_rect)
 
         painter.end()
-
-    def _draw_column_dividers(self, painter: QPainter, panel_rect) -> None:
-        widgets = [self._layout.itemAt(i).widget() for i in range(self._layout.count())]
-        painter.setPen(QColor(255, 255, 255, 20))
-        for left, right in zip(widgets, widgets[1:]):
-            mid_x = (left.geometry().right() + right.geometry().left()) / 2
-            painter.drawLine(
-                int(mid_x), panel_rect.top() + 10, int(mid_x), panel_rect.bottom() - 10
-            )
 
     # -- arrastar / ocultar -----------------------------------------------------------
     def mousePressEvent(self, event) -> None:
