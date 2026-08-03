@@ -59,6 +59,8 @@ def _activity_for(payload: dict) -> str | None:
         return "thinking"  # ainda não chamou nenhuma ferramenta
     if event in ("PreToolUse", "PostToolUse"):
         return TOOL_ACTIVITY.get(payload.get("tool_name"))
+    if event == "PreCompact":
+        return "processing"  # compactando o histórico da conversa
     return None
 
 

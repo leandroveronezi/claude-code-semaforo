@@ -46,6 +46,8 @@ MANAGED_HOOKS = {
     "PermissionRequest": (None, "error"),  # qualquer ferramenta pedindo permissão pausa a sessão -> vermelho
     "PostToolUse": ("", "working"),
     "PostToolUseFailure": (None, "error"),
+    "PreCompact": (None, "working"),  # /compact (manual ou automático por contexto cheio) começou
+    "PostCompact": (None, "idle"),  # compactação terminou -> volta a idle e recalcula tokens
     "StopFailure": (None, "error"),  # turno terminou por erro de API (rate limit, sobrecarga, etc.)
     "Stop": (None, "idle"),
     "SessionEnd": (None, "remove"),
