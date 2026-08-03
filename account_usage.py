@@ -17,12 +17,9 @@ Efeitos colaterais evitados deliberadamente:
   poluir o histórico/`/resume` do usuário com dezenas de sessões vazias.
 """
 import json
-import os
-import pty
 import re
-import select
 import shutil
-import signal
+import sys
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -34,6 +31,15 @@ import pyte
 from logging_setup import setup_logging
 
 logger = setup_logging("semaforo", "semaforo.log")
+
+# Abrir claude num pseudo-terminal exige um backend por SO (pty.fork no
+# POSIX, ConPTY via pywinpty no Windows) — ver pty_session_posix.py /
+# pty_session_windows.py. O backend em si só é importado dentro de
+# fetch_account_usage(), nunca aqui no topo do módulo: session_manager.py
+# importa account_usage no nível de módulo, então um import incondicional do
+# backend errado (ou de uma dependência ausente, como pywinpty não instalado)
+# derrubaria o app inteiro em vez de só desabilitar essa consulta.
+IS_WINDOWS = sys.platform == "win32"
 
 PROJECT_DIR = Path(__file__).resolve().parent
 CLAUDE_BIN_FALLBACK = Path.home() / ".local" / "bin" / "claude"
@@ -133,22 +139,6 @@ def _cleanup_session_file() -> None:
         shutil.rmtree(session_extra_dir, ignore_errors=True)
 
 
-def _read_into(fd: int, stream: "pyte.Stream", seconds: float) -> None:
-    deadline = time.time() + seconds
-    while time.time() < deadline:
-        remaining = deadline - time.time()
-        ready, _, _ = select.select([fd], [], [], max(remaining, 0))
-        if fd not in ready:
-            continue
-        try:
-            chunk = os.read(fd, 65536)
-        except OSError:
-            return  # pty fechado (processo filho morreu)
-        if not chunk:
-            return
-        stream.feed(chunk.decode(errors="ignore"))
-
-
 def _parse_usage_screen(text: str) -> dict | None:
     session_match = SESSION_RE.search(text)
     week_match = WEEK_RE.search(text)
@@ -210,10 +200,29 @@ def parse_reset_datetime(reset_text: str, now: datetime | None = None) -> dateti
     return result
 
 
+def _pty_session_class():
+    """Import tardio e guardado do backend certo pro SO atual — nunca no topo
+    do módulo (ver comentário de IS_WINDOWS acima). Devolve None se o backend
+    não puder ser usado (ex.: pywinpty não instalado no Windows), caso em que
+    fetch_account_usage() deve desistir sem quebrar."""
+    if IS_WINDOWS:
+        try:
+            from pty_session_windows import PtySessionWindows
+        except ImportError:
+            logger.debug("pywinpty não instalado; pulando consulta de cota no Windows")
+            return None
+        return PtySessionWindows
+    from pty_session_posix import PtySessionPosix
+    return PtySessionPosix
+
+
 def fetch_account_usage() -> dict | None:
     """Roda o fluxo completo num processo filho descartável. Devolve None em
     qualquer falha (binário ausente, timeout, tela em formato inesperado) —
     é sempre best-effort, nunca deve derrubar quem chamou."""
+    session_cls = _pty_session_class()
+    if session_cls is None:
+        return None
     claude_bin = _claude_bin()
     if claude_bin is None:
         logger.debug("Binário 'claude' não encontrado; pulando consulta de cota")
@@ -222,27 +231,24 @@ def fetch_account_usage() -> dict | None:
     screen = pyte.Screen(COLS, ROWS)
     stream = pyte.Stream(screen)
 
-    pid, fd = pty.fork()
-    if pid == 0:
-        os.chdir(PROJECT_DIR)
-        os.environ["SEMAFORO_SKIP_HOOK"] = "1"
-        try:
-            os.execv(claude_bin, [claude_bin, "--session-id", FIXED_SESSION_ID, "--strict-mcp-config"])
-        except OSError:
-            os._exit(1)
+    session = session_cls(
+        [claude_bin, "--session-id", FIXED_SESSION_ID, "--strict-mcp-config"],
+        PROJECT_DIR,
+        {"SEMAFORO_SKIP_HOOK": "1"},
+    )
 
     try:
-        _read_into(fd, stream, STARTUP_WAIT_SECONDS)
-        os.write(fd, b"\r")  # aceita o dialogo de confianca da pasta, se aparecer; inofensivo se ja estiver no prompt
-        _read_into(fd, stream, TRUST_DIALOG_WAIT_SECONDS)
-        os.write(fd, b"/usage\r")
-        _read_into(fd, stream, USAGE_SCREEN_WAIT_SECONDS)
+        session.read_into(stream, STARTUP_WAIT_SECONDS)
+        session.write(b"\r")  # aceita o dialogo de confianca da pasta, se aparecer; inofensivo se ja estiver no prompt
+        session.read_into(stream, TRUST_DIALOG_WAIT_SECONDS)
+        session.write(b"/usage\r")
+        session.read_into(stream, USAGE_SCREEN_WAIT_SECONDS)
         result = _parse_usage_screen("\n".join(screen.display))
         # sessão ainda não veio: insiste um pouco mais em vez de devolver logo
         # o parcial só-com-semana (ver comentário de SESSION_RE/WEEK_RE acima).
         deadline = time.time() + USAGE_SCREEN_MAX_EXTRA_WAIT_SECONDS
         while (not result or "session_pct" not in result) and time.time() < deadline:
-            _read_into(fd, stream, USAGE_SCREEN_POLL_INTERVAL_SECONDS)
+            session.read_into(stream, USAGE_SCREEN_POLL_INTERVAL_SECONDS)
             result = _parse_usage_screen("\n".join(screen.display))
         if not result:
             logger.warning("Tela de /usage não teve o formato esperado dentro do tempo limite")
@@ -253,34 +259,8 @@ def fetch_account_usage() -> dict | None:
         logger.warning("Falha de E/S ao consultar cota da conta (pty)", exc_info=True)
         return None
     finally:
-        _terminate(pid, fd)
+        session.terminate(GRACEFUL_EXIT_WAIT_SECONDS)
         _cleanup_session_file()
-
-
-def _terminate(pid: int, fd: int) -> None:
-    try:
-        os.write(fd, b"\x03\x03")  # Ctrl+C duas vezes: saida normal do Claude Code
-    except OSError:
-        pass
-    deadline = time.time() + GRACEFUL_EXIT_WAIT_SECONDS
-    while time.time() < deadline:
-        try:
-            done_pid, _ = os.waitpid(pid, os.WNOHANG)
-        except ChildProcessError:
-            break
-        if done_pid == pid:
-            break
-        time.sleep(0.1)
-    else:
-        try:
-            os.kill(pid, signal.SIGKILL)
-            os.waitpid(pid, 0)
-        except (OSError, ChildProcessError):
-            pass
-    try:
-        os.close(fd)
-    except OSError:
-        pass
 
 
 if __name__ == "__main__":

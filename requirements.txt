@@ -2,3 +2,4 @@ PyQt6==6.6.1
 PyQt6-Qt6==6.6.3
 PyYAML>=6.0
 pyte>=0.8.2
+pywinpty>=2.0; sys_platform == "win32"
