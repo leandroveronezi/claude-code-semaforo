@@ -236,7 +236,16 @@ def main() -> None:
         # transcript (inclusive as que só chamam ferramenta, sem texto) já
         # vem com "usage" — então dá pra atualizar o contador progressivamente
         # enquanto o Claude ainda está respondendo, em vez de esperar o Stop.
-        usage = _cumulative_usage(payload.get("transcript_path"))
+        if event == "PostCompact":
+            # nesse instante o transcript ainda não tem nenhuma entrada
+            # "assistant" depois do compact_boundary (só é gerada na próxima
+            # resposta) — _cumulative_usage devolveria a última entrada
+            # PRÉ-compact, mostrando um número inflado e enganoso logo após
+            # compactar. Zera explicitamente; o próximo turno recalcula com
+            # o contexto já reduzido.
+            usage = {"total_tokens": 0, "total_input_tokens": 0, "total_output_tokens": 0}
+        else:
+            usage = _cumulative_usage(payload.get("transcript_path"))
         if usage:
             update_usage(session_id, usage, label=label)
 

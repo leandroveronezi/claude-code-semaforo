@@ -47,7 +47,7 @@ MANAGED_HOOKS = {
     "PostToolUse": ("", "working"),
     "PostToolUseFailure": (None, "error"),
     "PreCompact": (None, "working"),  # /compact (manual ou automático por contexto cheio) começou
-    "PostCompact": (None, "idle"),  # compactação terminou -> volta a idle e recalcula tokens
+    "PostCompact": (None, "idle"),  # compactação terminou -> volta a idle e zera contador de tokens
     "StopFailure": (None, "error"),  # turno terminou por erro de API (rate limit, sobrecarga, etc.)
     "Stop": (None, "idle"),
     "SessionEnd": (None, "remove"),
