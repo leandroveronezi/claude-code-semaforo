@@ -152,6 +152,7 @@ class _TitleLabel(QLabel):
         self._raw_text = text
         metrics = QFontMetrics(self.font())
         self.setText(metrics.elidedText(text, Qt.TextElideMode.ElideRight, self.width()))
+        self._request_repaint()
 
     def set_status_color(self, status: str) -> None:
         # usa QPalette em vez de setStyleSheet: qualquer stylesheet aplicado
@@ -163,6 +164,14 @@ class _TitleLabel(QLabel):
         palette = self.palette()
         palette.setColor(QPalette.ColorRole.WindowText, color)
         self.setPalette(palette)
+        self._request_repaint()
+
+    def _request_repaint(self) -> None:
+        # ver LightColumn._request_repaint em light_column.py: setText/
+        # setPalette do QLabel disparam update() só deste label; repintar a
+        # janela inteira em vez disso evita o mesmo dessincronismo do cache
+        # do QGraphicsDropShadowEffect do painel com repaints parciais.
+        self.window().update()
 
 
 class _SessionColumn(QWidget):
@@ -213,7 +222,7 @@ class _SessionColumn(QWidget):
             return
         self._opacity = opacity
         self.lights.set_opacity(opacity)
-        self.update()
+        self.window().update()
 
     def paintEvent(self, event) -> None:
         # card individual da sessão (borda + fundo levemente mais claro que o

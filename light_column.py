@@ -161,20 +161,24 @@ class LightColumn(QWidget):
         self._pulse_timer.timeout.connect(self._on_pulse_tick)
         self._sync_pulse_timer()
 
-    def _on_pulse_tick(self) -> None:
+    def _request_repaint(self) -> None:
         # atualiza a janela top-level inteira em vez de só este widget
         # (self.update()). O painel (SemaphorePanel) tem um
         # QGraphicsDropShadowEffect aplicado (ver seu __init__), e o Qt
         # renderiza a subárvore inteira de widgets num pixmap offscreen pra
-        # aplicar esse efeito. Repaint parcial de só este widget, ~25x/s
-        # enquanto o status é "working", dessincroniza o cache interno desse
-        # pixmap do efeito: sobra conteúdo "congelado" (opaco) atrás de
-        # outros widgets irmãos que nunca são marcados sujos individualmente
-        # — ex. o título (ver _TitleLabel em semaphore_panel.py), que aparece
-        # como um retângulo escuro até a próxima repintura completa do
-        # painel. Forçar update() na janela inteira a cada tick evita o
+        # aplicar esse efeito. Repaint parcial de só este widget dessincroniza
+        # o cache interno desse pixmap do efeito: sobra conteúdo "congelado"
+        # (opaco) atrás de outros widgets irmãos que nunca são marcados
+        # sujos individualmente — ex. o título (ver _TitleLabel em
+        # semaphore_panel.py), que chega a aparecer como um retângulo escuro
+        # por um frame até a próxima repintura completa do painel. Usado por
+        # toda mudança de estado que dispararia update() aqui (não só o
+        # tick do pulso), já que qualquer uma delas pode disparar o mesmo
         # dessincronismo (custo desprezível pro tamanho da janela).
         self.window().update()
+
+    def _on_pulse_tick(self) -> None:
+        self._request_repaint()
 
     def _content_size(self) -> tuple[int, int]:
         if self.style == STYLE_DOT:
@@ -186,38 +190,38 @@ class LightColumn(QWidget):
             return
         self.status = status
         self._sync_pulse_timer()
-        self.update()
+        self._request_repaint()
 
     def set_style(self, style: str) -> None:
         if style not in (STYLE_SEMAPHORE, STYLE_DOT) or style == self.style:
             return
         self.style = style
         self.setFixedSize(*self._content_size())
-        self.update()
+        self._request_repaint()
 
     def set_usage(self, tokens: int | None) -> None:
         if tokens == self.usage_tokens:
             return
         self.usage_tokens = tokens
-        self.update()
+        self._request_repaint()
 
     def set_show_usage(self, enabled: bool) -> None:
         if enabled == self.usage_enabled:
             return
         self.usage_enabled = enabled
-        self.update()
+        self._request_repaint()
 
     def set_thresholds(self, thresholds: list[tuple[int, str]]) -> None:
         parsed = [(tokens, QColor(color)) for tokens, color in thresholds]
         parsed.sort(key=lambda t: t[0])
         self.thresholds = parsed or list(DEFAULT_USAGE_THRESHOLDS)
-        self.update()
+        self._request_repaint()
 
     def set_opacity(self, opacity: float) -> None:
         if opacity == self._opacity:
             return
         self._opacity = opacity
-        self.update()
+        self._request_repaint()
 
     def _usage_color_and_ratio(self) -> tuple[QColor, float] | None:
         # usage_tokens é None até a sessão gerar a primeira resposta (ver
