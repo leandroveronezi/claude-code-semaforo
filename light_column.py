@@ -96,6 +96,28 @@ def _format_tokens(tokens: int) -> str:
     return str(tokens)
 
 
+def _fill_rounded_rect_opaque(
+    painter: QPainter, rect: QRectF, color: QColor, rx: float, ry: float | None = None
+) -> None:
+    """Preenche `rect` com `color` substituindo os pixels (CompositionMode_Source)
+    em vez de misturar por cima (SourceOver, o padrão) — usado nos
+    preenchimentos "estruturais" (cápsula das luzes, trilho da barra de uso)
+    que ficam por cima do card/painel, ambos já translúcidos: com blending
+    normal essas camadas translúcidas se somam (o alpha efetivo composto
+    fica bem maior que a opacidade configurada — ex. ~58% em vez de 35% — e
+    o elemento aparece como um retângulo visivelmente mais opaco que o resto
+    do painel ao redor, em vez de se misturar). Substituir o pixel garante
+    que o alpha final seja exatamente o configurado, não importa quantas
+    camadas translúcidas já foram desenhadas por baixo."""
+    if ry is None:
+        ry = rx
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(color)
+    painter.drawRoundedRect(rect, rx, ry)
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+
+
 def _with_alpha_factor(color: QColor, factor: float) -> QColor:
     """Cópia de `color` com o canal alpha escalado por `factor` (0-1) — usada
     para aplicar a opacidade configurável do painel (ver
@@ -281,11 +303,13 @@ class LightColumn(QWidget):
         x = cx - LIGHT_TRACK_WIDTH / 2
         y = top - LIGHT_TRACK_PADDING
         height = STACK_HEIGHT + 2 * LIGHT_TRACK_PADDING
-        painter.setPen(QPen(_with_alpha_factor(USAGE_BAR_BORDER_COLOR, self._opacity), 1))
-        painter.setBrush(_with_alpha_factor(USAGE_BAR_TRACK_COLOR, self._opacity))
-        painter.drawRoundedRect(
-            QRectF(x, y, LIGHT_TRACK_WIDTH, height), LIGHT_TRACK_WIDTH / 2, LIGHT_TRACK_WIDTH / 2
+        rect = QRectF(x, y, LIGHT_TRACK_WIDTH, height)
+        _fill_rounded_rect_opaque(
+            painter, rect, _with_alpha_factor(USAGE_BAR_TRACK_COLOR, self._opacity), LIGHT_TRACK_WIDTH / 2
         )
+        painter.setPen(QPen(_with_alpha_factor(USAGE_BAR_BORDER_COLOR, self._opacity), 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(rect, LIGHT_TRACK_WIDTH / 2, LIGHT_TRACK_WIDTH / 2)
 
     def _draw_divider(self, painter: QPainter, top: float, height: float) -> None:
         painter.setPen(QPen(_with_alpha_factor(DIVIDER_COLOR, self._opacity), 1))
@@ -296,11 +320,13 @@ class LightColumn(QWidget):
 
     def _draw_usage_bar(self, painter: QPainter, top: float, height: float) -> None:
         x = self._bar_x()
-        painter.setPen(QPen(_with_alpha_factor(USAGE_BAR_BORDER_COLOR, self._opacity), 1))
-        painter.setBrush(_with_alpha_factor(USAGE_BAR_TRACK_COLOR, self._opacity))
-        painter.drawRoundedRect(
-            int(x), int(top), USAGE_BAR_WIDTH, int(height), USAGE_BAR_WIDTH / 2, USAGE_BAR_WIDTH / 2
+        track_rect = QRectF(x, top, USAGE_BAR_WIDTH, height)
+        _fill_rounded_rect_opaque(
+            painter, track_rect, _with_alpha_factor(USAGE_BAR_TRACK_COLOR, self._opacity), USAGE_BAR_WIDTH / 2
         )
+        painter.setPen(QPen(_with_alpha_factor(USAGE_BAR_BORDER_COLOR, self._opacity), 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(track_rect, USAGE_BAR_WIDTH / 2, USAGE_BAR_WIDTH / 2)
 
         color_and_ratio = self._usage_color_and_ratio()
         if color_and_ratio is None:
@@ -367,11 +393,13 @@ class LightColumn(QWidget):
         text_width = QFontMetrics(font).horizontalAdvance(text)
         bar_width = self.width() - bar_x - DOT_STYLE_TEXT_GAP - text_width - DOT_STYLE_PADDING
 
-        painter.setPen(QPen(_with_alpha_factor(USAGE_BAR_BORDER_COLOR, self._opacity), 1))
-        painter.setBrush(_with_alpha_factor(USAGE_BAR_TRACK_COLOR, self._opacity))
-        painter.drawRoundedRect(
-            QRectF(bar_x, bar_top, bar_width, bar_height), bar_height / 2, bar_height / 2
+        track_rect = QRectF(bar_x, bar_top, bar_width, bar_height)
+        _fill_rounded_rect_opaque(
+            painter, track_rect, _with_alpha_factor(USAGE_BAR_TRACK_COLOR, self._opacity), bar_height / 2
         )
+        painter.setPen(QPen(_with_alpha_factor(USAGE_BAR_BORDER_COLOR, self._opacity), 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(track_rect, bar_height / 2, bar_height / 2)
 
         color_and_ratio = self._usage_color_and_ratio()
         if color_and_ratio is None:
@@ -455,9 +483,11 @@ class LightColumn(QWidget):
             fill.setColorAt(1.0, edge)
             painter.setBrush(fill)
         else:
-            painter.setBrush(DIM_COLORS[name])
+            painter.setBrush(_with_alpha_factor(DIM_COLORS[name], self._opacity))
 
-        painter.setPen(QPen(DOT_RING_COLOR, 1) if not active else Qt.PenStyle.NoPen)
+        painter.setPen(
+            QPen(_with_alpha_factor(DOT_RING_COLOR, self._opacity), 1) if not active else Qt.PenStyle.NoPen
+        )
         painter.drawEllipse(QPoint(int(cx), int(cy)), int(radius), int(radius))
         painter.setPen(Qt.PenStyle.NoPen)
 

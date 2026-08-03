@@ -221,8 +221,21 @@ class _SessionColumn(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = self.rect().adjusted(0, 0, -1, -1)
-        painter.setPen(QPen(_with_alpha_factor(CARD_BORDER_COLOR, self._opacity), 1))
+        # preenchimento em CompositionMode_Source (substitui pixel) em vez de
+        # SourceOver (padrão, mistura): o card cobre o painel logo abaixo, e
+        # ambos são translúcidos — misturar duas camadas translúcidas soma o
+        # alpha (~35% + 35% do resto vira ~58% efetivo), fazendo o card
+        # aparecer como um retângulo nitidamente mais opaco em vez de se
+        # misturar. Substituir garante que o alpha final seja exatamente o
+        # configurado, igual ao resto do painel.
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(_bg_color(CARD_BG_RGB, self._opacity))
+        painter.drawRoundedRect(rect, CARD_CORNER_RADIUS, CARD_CORNER_RADIUS)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+
+        painter.setPen(QPen(_with_alpha_factor(CARD_BORDER_COLOR, self._opacity), 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRoundedRect(rect, CARD_CORNER_RADIUS, CARD_CORNER_RADIUS)
 
         # linha fina separando o título do semáforo, como na referência;
