@@ -158,8 +158,23 @@ class LightColumn(QWidget):
 
         self._pulse_timer = QTimer(self)
         self._pulse_timer.setInterval(40)
-        self._pulse_timer.timeout.connect(self.update)
+        self._pulse_timer.timeout.connect(self._on_pulse_tick)
         self._sync_pulse_timer()
+
+    def _on_pulse_tick(self) -> None:
+        # atualiza a janela top-level inteira em vez de só este widget
+        # (self.update()). O painel (SemaphorePanel) tem um
+        # QGraphicsDropShadowEffect aplicado (ver seu __init__), e o Qt
+        # renderiza a subárvore inteira de widgets num pixmap offscreen pra
+        # aplicar esse efeito. Repaint parcial de só este widget, ~25x/s
+        # enquanto o status é "working", dessincroniza o cache interno desse
+        # pixmap do efeito: sobra conteúdo "congelado" (opaco) atrás de
+        # outros widgets irmãos que nunca são marcados sujos individualmente
+        # — ex. o título (ver _TitleLabel em semaphore_panel.py), que aparece
+        # como um retângulo escuro até a próxima repintura completa do
+        # painel. Forçar update() na janela inteira a cada tick evita o
+        # dessincronismo (custo desprezível pro tamanho da janela).
+        self.window().update()
 
     def _content_size(self) -> tuple[int, int]:
         if self.style == STYLE_DOT:
