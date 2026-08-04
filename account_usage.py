@@ -17,6 +17,7 @@ Efeitos colaterais evitados deliberadamente:
   poluir o histórico/`/resume` do usuário com dezenas de sessões vazias.
 """
 import json
+import os
 import re
 import shutil
 import sys
@@ -76,6 +77,16 @@ GRACEFUL_EXIT_WAIT_SECONDS = 1.5
 # restritos aos dois-linhas do próprio bloco, sem vazar pro bloco seguinte
 # quando o "% used" da sessão não veio (caso do throttling acima) — nesse
 # caso o regex simplesmente não casa, em vez de casar errado com a semana.
+# telas do onboarding de primeira execução do CLI (escolha de tema, escolha de
+# método de login). Não dá pra atravessá-las às cegas: o `\r` que aceita o
+# diálogo de confiança viraria "selecionar a opção 1" no menu de login, o que
+# dispara um fluxo OAuth de verdade (abre o navegador, fica esperando um código
+# colado) em nome do usuário, sem ele ter pedido nada. Melhor reconhecer e
+# desistir — só faz falta em máquina onde o `claude` nunca foi rodado como CLI
+# (ex.: uso só pela extensão do VS Code), e uma execução manual resolve.
+ONBOARDING_RE = re.compile(
+    r"Choose the text style|Select login method|Paste code here if prompted"
+)
 SESSION_RE = re.compile(r"Current session\s*\n[^\n]*?(?P<pct>\d+)% used\s*\n\s*Resets (?P<resets>[^\n]+)")
 WEEK_RE = re.compile(r"Current week.*\n[^\n]*?(?P<pct>\d+)% used\s*\n\s*Resets (?P<resets>[^\n]+)")
 
@@ -118,25 +129,65 @@ def save_cached_usage(data: dict) -> None:
         pass
 
 
+def _vscode_extension_binaries() -> list[Path]:
+    """Binário embutido na extensão do VS Code. É a única instalação presente
+    em máquinas Windows onde o Claude Code só é usado pela IDE — nesse caso não
+    existe `claude` no PATH nenhum, e sem este candidato a consulta de cota
+    simplesmente nunca roda. Ordena por versão de verdade (tupla de inteiros,
+    não string: "2.1.9" tem que perder pra "2.1.10")."""
+    def version_key(path: Path) -> tuple[int, ...]:
+        match = re.search(r"claude-code-(\d+(?:\.\d+)*)", path.name)
+        return tuple(int(part) for part in match.group(1).split(".")) if match else ()
+
+    found: list[Path] = []
+    for root_name in (".vscode", ".vscode-insiders"):
+        root = Path.home() / root_name / "extensions"
+        found.extend(sorted(root.glob("anthropic.claude-code-*"), key=version_key, reverse=True))
+    return [d / "resources" / "native-binary" / "claude.exe" for d in found]
+
+
 def _claude_bin() -> str | None:
     found = shutil.which("claude")
     if found:
         return found
-    # autostart (freedesktop) roda com PATH mínimo, sem ~/.local/bin
-    return str(CLAUDE_BIN_FALLBACK) if CLAUDE_BIN_FALLBACK.exists() else None
+    if IS_WINDOWS:
+        # o PATH do processo pode não ter o CLI (instalação só pela extensão do
+        # VS Code, ou app subindo por atalho de inicialização) — mesma ideia do
+        # CLAUDE_BIN_FALLBACK do POSIX, só que com mais de um lugar plausível.
+        candidates = [Path.home() / ".local" / "bin" / "claude.exe"]
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            candidates.append(Path(appdata) / "npm" / "claude.cmd")
+        candidates.extend(_vscode_extension_binaries())
+    else:
+        # autostart (freedesktop) roda com PATH mínimo, sem ~/.local/bin
+        candidates = [CLAUDE_BIN_FALLBACK]
+    return next((str(path) for path in candidates if path.exists()), None)
 
 
-def _project_hash_dir() -> Path:
-    return Path.home() / ".claude" / "projects" / str(PROJECT_DIR).replace("/", "-")
+def _project_hash_dirs() -> list[Path]:
+    """Diretórios onde o Claude Code pode ter gravado o .jsonl da sessão
+    descartável. Mais de um no Windows: o nome é derivado do cwd como string, e
+    a caixa da letra do drive varia com quem lançou o processo (`Path.resolve()`
+    devolve "C:", o VS Code passa "c:") — a limpeza tenta as duas em vez de
+    apostar numa."""
+    projects = Path.home() / ".claude" / "projects"
+    if not IS_WINDOWS:
+        return [projects / str(PROJECT_DIR).replace("/", "-")]
+    # convenção do Claude Code no Windows: todo caractere não-alfanumérico
+    # (inclusive "\" e ":") vira "-", ex.: "c--Users-henri-...-semaforo".
+    raw = str(PROJECT_DIR)
+    variants = {raw, raw[:1].lower() + raw[1:], raw[:1].upper() + raw[1:]}
+    return [projects / re.sub(r"[^A-Za-z0-9]", "-", variant) for variant in variants]
 
 
 def _cleanup_session_file() -> None:
-    directory = _project_hash_dir()
-    session_file = directory / f"{FIXED_SESSION_ID}.jsonl"
-    session_file.unlink(missing_ok=True)
-    session_extra_dir = directory / FIXED_SESSION_ID
-    if session_extra_dir.is_dir():
-        shutil.rmtree(session_extra_dir, ignore_errors=True)
+    for directory in _project_hash_dirs():
+        session_file = directory / f"{FIXED_SESSION_ID}.jsonl"
+        session_file.unlink(missing_ok=True)
+        session_extra_dir = directory / FIXED_SESSION_ID
+        if session_extra_dir.is_dir():
+            shutil.rmtree(session_extra_dir, ignore_errors=True)
 
 
 def _parse_usage_screen(text: str) -> dict | None:
@@ -231,14 +282,23 @@ def fetch_account_usage() -> dict | None:
     screen = pyte.Screen(COLS, ROWS)
     stream = pyte.Stream(screen)
 
-    session = session_cls(
-        [claude_bin, "--session-id", FIXED_SESSION_ID, "--strict-mcp-config"],
-        PROJECT_DIR,
-        {"SEMAFORO_SKIP_HOOK": "1"},
-    )
-
+    # dentro do try: o spawn em si pode falhar (binário inválido, ConPTY
+    # indisponível), e mesmo aí o `finally` precisa rodar a limpeza.
+    session = None
     try:
+        session = session_cls(
+            [claude_bin, "--session-id", FIXED_SESSION_ID, "--strict-mcp-config"],
+            PROJECT_DIR,
+            {"SEMAFORO_SKIP_HOOK": "1"},
+        )
         session.read_into(stream, STARTUP_WAIT_SECONDS)
+        if ONBOARDING_RE.search("\n".join(screen.display)):
+            logger.warning(
+                "O CLI 'claude' abriu no onboarding de primeira execução (tema/login) em vez "
+                "do prompt; rode 'claude' uma vez num terminal e conclua o fluxo. Pulando a "
+                "consulta de cota."
+            )
+            return None
         session.write(b"\r")  # aceita o dialogo de confianca da pasta, se aparecer; inofensivo se ja estiver no prompt
         session.read_into(stream, TRUST_DIALOG_WAIT_SECONDS)
         session.write(b"/usage\r")
@@ -259,7 +319,8 @@ def fetch_account_usage() -> dict | None:
         logger.warning("Falha de E/S ao consultar cota da conta (pty)", exc_info=True)
         return None
     finally:
-        session.terminate(GRACEFUL_EXIT_WAIT_SECONDS)
+        if session is not None:
+            session.terminate(GRACEFUL_EXIT_WAIT_SECONDS)
         _cleanup_session_file()
 
 
