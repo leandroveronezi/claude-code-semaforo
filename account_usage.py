@@ -44,6 +44,26 @@ IS_WINDOWS = sys.platform == "win32"
 
 PROJECT_DIR = Path(__file__).resolve().parent
 CLAUDE_BIN_FALLBACK = Path.home() / ".local" / "bin" / "claude"
+# config global do CLI (não é por-sessão) — todo `claude` que sobe, inclusive
+# a sessão descartável daqui, lê/mescla/regrava esse arquivo inteiro. Rede de
+# segurança em _backup_claude_config/_restore_claude_config_if_corrupted: se o
+# processo descartável for morto (SIGKILL, ver GRACEFUL_EXIT_WAIT_SECONDS) no
+# meio de uma escrita, o arquivo pode truncar — e como é lido por *todo*
+# `claude` subsequente, um `.claude.json` corrompido quebraria o CLI de
+# verdade do usuário, não só essa consulta de cota. Não tenta resolver a
+# corrida de "última escrita ganha" entre a sessão descartável e uma sessão
+# interativa concorrente (só restaura se o arquivo ficou inválido, nunca por
+# ele só ter mudado de conteúdo) — isso exigiria entender o formato interno
+# do CLI, que é fechado.
+CLAUDE_CONFIG_PATH = Path.home() / ".claude.json"
+# trava pra impedir duas consultas de cota concorrentes entre *processos*
+# diferentes (ex.: `python3 account_usage.py` manual enquanto o app já está
+# de pé, ou duas instâncias do app — ver SEMAFORO_STATUS_DIR). O guard em
+# SessionManager._poll_account_usage só cobre sobreposição dentro do mesmo
+# processo; sem essa trava, dois processos sobem o mesmo --session-id fixo em
+# paralelo e disputam o mesmo ~/.claude.json — já observado corrompendo de
+# verdade em teste manual (ver _backup_claude_config acima).
+ACCOUNT_USAGE_LOCK_PATH = Path.home() / ".config" / "semaforo-status" / "account_usage.lock"
 # último resultado bem-sucedido, pra mostrar algo de imediato ao abrir o app
 # em vez de deixar a caixa sumida pelos ~5-30s até a primeira consulta real
 # terminar (fetch_account_usage é lento — ver comentário da função). Puramente
@@ -181,6 +201,75 @@ def _project_hash_dirs() -> list[Path]:
     return [projects / re.sub(r"[^A-Za-z0-9]", "-", variant) for variant in variants]
 
 
+def _try_acquire_account_usage_lock():
+    """Tenta travar ACCOUNT_USAGE_LOCK_PATH sem bloquear. Devolve o file
+    handle aberto (mantenha vivo até terminar) se conseguiu, ou None se outro
+    processo já tem a trava — chamador deve desistir, nunca esperar (ver
+    comentário de ACCOUNT_USAGE_LOCK_PATH acima).
+
+    É uma trava do SO sobre o file descriptor (flock/LockFileEx), não um
+    lockfile-com-pid: libera sozinha quando o processo termina, inclusive
+    SIGKILL, sem lock obsoleto pra limpar manualmente depois de um crash."""
+    ACCOUNT_USAGE_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(ACCOUNT_USAGE_LOCK_PATH, "a+b")
+    try:
+        if IS_WINDOWS:
+            import msvcrt
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    return fh
+
+
+def _release_account_usage_lock(fh) -> None:
+    try:
+        if IS_WINDOWS:
+            import msvcrt
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+    finally:
+        fh.close()
+
+
+def _backup_claude_config() -> bytes | None:
+    try:
+        return CLAUDE_CONFIG_PATH.read_bytes()
+    except OSError:
+        return None
+
+
+def _restore_claude_config_if_corrupted(backup: bytes | None) -> None:
+    """Só mexe no arquivo se ele ficou inválido (JSON quebrado/ilegível) após
+    a sessão descartável — nunca por ter mudado de conteúdo, pra não apagar
+    uma escrita legítima de uma sessão interativa concorrente (ver comentário
+    de CLAUDE_CONFIG_PATH)."""
+    if backup is None:
+        return
+    try:
+        json.loads(CLAUDE_CONFIG_PATH.read_bytes())
+        return  # ainda válido, nada a fazer
+    except (OSError, ValueError):
+        pass
+    try:
+        CLAUDE_CONFIG_PATH.write_bytes(backup)
+        logger.warning(
+            "~/.claude.json ficou corrompido logo após a consulta de cota; restaurado do backup "
+            "feito antes de abrir a sessão descartável"
+        )
+    except OSError:
+        logger.error("~/.claude.json corrompido e não foi possível restaurar o backup", exc_info=True)
+
+
 def _cleanup_session_file() -> None:
     for directory in _project_hash_dirs():
         session_file = directory / f"{FIXED_SESSION_ID}.jsonl"
@@ -279,49 +368,59 @@ def fetch_account_usage() -> dict | None:
         logger.debug("Binário 'claude' não encontrado; pulando consulta de cota")
         return None
 
-    screen = pyte.Screen(COLS, ROWS)
-    stream = pyte.Stream(screen)
-
-    # dentro do try: o spawn em si pode falhar (binário inválido, ConPTY
-    # indisponível), e mesmo aí o `finally` precisa rodar a limpeza.
-    session = None
-    try:
-        session = session_cls(
-            [claude_bin, "--session-id", FIXED_SESSION_ID, "--strict-mcp-config"],
-            PROJECT_DIR,
-            {"SEMAFORO_SKIP_HOOK": "1"},
-        )
-        session.read_into(stream, STARTUP_WAIT_SECONDS)
-        if ONBOARDING_RE.search("\n".join(screen.display)):
-            logger.warning(
-                "O CLI 'claude' abriu no onboarding de primeira execução (tema/login) em vez "
-                "do prompt; rode 'claude' uma vez num terminal e conclua o fluxo. Pulando a "
-                "consulta de cota."
-            )
-            return None
-        session.write(b"\r")  # aceita o dialogo de confianca da pasta, se aparecer; inofensivo se ja estiver no prompt
-        session.read_into(stream, TRUST_DIALOG_WAIT_SECONDS)
-        session.write(b"/usage\r")
-        session.read_into(stream, USAGE_SCREEN_WAIT_SECONDS)
-        result = _parse_usage_screen("\n".join(screen.display))
-        # sessão ainda não veio: insiste um pouco mais em vez de devolver logo
-        # o parcial só-com-semana (ver comentário de SESSION_RE/WEEK_RE acima).
-        deadline = time.time() + USAGE_SCREEN_MAX_EXTRA_WAIT_SECONDS
-        while (not result or "session_pct" not in result) and time.time() < deadline:
-            session.read_into(stream, USAGE_SCREEN_POLL_INTERVAL_SECONDS)
-            result = _parse_usage_screen("\n".join(screen.display))
-        if not result:
-            logger.warning("Tela de /usage não teve o formato esperado dentro do tempo limite")
-        elif "session_pct" not in result:
-            logger.debug("Consulta de cota voltou sem session_pct (throttling conhecido)")
-        return result
-    except OSError:
-        logger.warning("Falha de E/S ao consultar cota da conta (pty)", exc_info=True)
+    lock = _try_acquire_account_usage_lock()
+    if lock is None:
+        logger.debug("Outra consulta de cota já está em andamento em outro processo; pulando")
         return None
+
+    try:
+        screen = pyte.Screen(COLS, ROWS)
+        stream = pyte.Stream(screen)
+        config_backup = _backup_claude_config()
+
+        # dentro do try: o spawn em si pode falhar (binário inválido, ConPTY
+        # indisponível), e mesmo aí o `finally` precisa rodar a limpeza.
+        session = None
+        try:
+            session = session_cls(
+                [claude_bin, "--session-id", FIXED_SESSION_ID, "--strict-mcp-config"],
+                PROJECT_DIR,
+                {"SEMAFORO_SKIP_HOOK": "1"},
+            )
+            session.read_into(stream, STARTUP_WAIT_SECONDS)
+            if ONBOARDING_RE.search("\n".join(screen.display)):
+                logger.warning(
+                    "O CLI 'claude' abriu no onboarding de primeira execução (tema/login) em vez "
+                    "do prompt; rode 'claude' uma vez num terminal e conclua o fluxo. Pulando a "
+                    "consulta de cota."
+                )
+                return None
+            session.write(b"\r")  # aceita o dialogo de confianca da pasta, se aparecer; inofensivo se ja estiver no prompt
+            session.read_into(stream, TRUST_DIALOG_WAIT_SECONDS)
+            session.write(b"/usage\r")
+            session.read_into(stream, USAGE_SCREEN_WAIT_SECONDS)
+            result = _parse_usage_screen("\n".join(screen.display))
+            # sessão ainda não veio: insiste um pouco mais em vez de devolver logo
+            # o parcial só-com-semana (ver comentário de SESSION_RE/WEEK_RE acima).
+            deadline = time.time() + USAGE_SCREEN_MAX_EXTRA_WAIT_SECONDS
+            while (not result or "session_pct" not in result) and time.time() < deadline:
+                session.read_into(stream, USAGE_SCREEN_POLL_INTERVAL_SECONDS)
+                result = _parse_usage_screen("\n".join(screen.display))
+            if not result:
+                logger.warning("Tela de /usage não teve o formato esperado dentro do tempo limite")
+            elif "session_pct" not in result:
+                logger.debug("Consulta de cota voltou sem session_pct (throttling conhecido)")
+            return result
+        except OSError:
+            logger.warning("Falha de E/S ao consultar cota da conta (pty)", exc_info=True)
+            return None
+        finally:
+            if session is not None:
+                session.terminate(GRACEFUL_EXIT_WAIT_SECONDS)
+            _cleanup_session_file()
+            _restore_claude_config_if_corrupted(config_backup)
     finally:
-        if session is not None:
-            session.terminate(GRACEFUL_EXIT_WAIT_SECONDS)
-        _cleanup_session_file()
+        _release_account_usage_lock(lock)
 
 
 if __name__ == "__main__":
