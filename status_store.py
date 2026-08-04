@@ -8,6 +8,31 @@ STATUSES = ("idle", "working", "error")
 
 DEFAULT_SESSIONS_DIR = Path(__file__).resolve().parent / "sessions"
 
+REPLACE_RETRIES = 5
+REPLACE_RETRY_DELAY = 0.05
+
+
+def _replace_with_retry(tmp: Path, target: Path) -> None:
+    """`os.replace` com retentativas curtas.
+
+    No POSIX o `rename(2)` sobre um arquivo aberto sempre funciona e o retry
+    nunca chega a disparar. No Windows o `MoveFileEx` por trás falha com
+    `PermissionError: [WinError 5]` enquanto qualquer outro processo tiver o
+    destino aberto sem `FILE_SHARE_DELETE` — na prática, a sync engine do
+    OneDrive (quando o repo mora lá) e o próprio `QFileSystemWatcher` do app,
+    que observa cada `sessions/*.json`. É uma janela de milissegundos e
+    intermitente, então basta reagendar; se mesmo assim não passar, o `.tmp`
+    é removido pra não virar lixo e o erro sobe igual antes (o hook loga)."""
+    for attempt in range(REPLACE_RETRIES):
+        try:
+            os.replace(tmp, target)
+            return
+        except PermissionError:
+            if attempt == REPLACE_RETRIES - 1:
+                tmp.unlink(missing_ok=True)
+                raise
+            time.sleep(REPLACE_RETRY_DELAY)
+
 
 def sessions_dir() -> Path:
     override = os.environ.get("SEMAFORO_STATUS_DIR")
@@ -51,7 +76,7 @@ def write_status(
 
     tmp = target.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload), encoding="utf-8")
-    os.replace(tmp, target)
+    _replace_with_retry(tmp, target)
     return target
 
 
@@ -87,7 +112,7 @@ def update_usage(
 
     tmp = target.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload), encoding="utf-8")
-    os.replace(tmp, target)
+    _replace_with_retry(tmp, target)
     return target
 
 
