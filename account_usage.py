@@ -385,7 +385,12 @@ def fetch_account_usage() -> dict | None:
             session = session_cls(
                 [claude_bin, "--session-id", FIXED_SESSION_ID, "--strict-mcp-config"],
                 PROJECT_DIR,
-                {"SEMAFORO_SKIP_HOOK": "1"},
+                # DISABLE_AUTOUPDATER: essa sessão descartável é lançada a cada poll (padrão
+                # 5min, ver Config.account_usage_poll_minutes) — sem isso, cada spawn dispara
+                # a checagem de auto-update em background do próprio CLI, alimentando um loop
+                # de download/finalização quebrado do lado do Claude Code (visto acumulando
+                # dezenas de GB órfãos em ~/.cache/claude/staging).
+                {"SEMAFORO_SKIP_HOOK": "1", "DISABLE_AUTOUPDATER": "1"},
             )
             session.read_into(stream, STARTUP_WAIT_SECONDS)
             if ONBOARDING_RE.search("\n".join(screen.display)):
